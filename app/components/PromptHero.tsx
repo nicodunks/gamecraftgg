@@ -81,7 +81,7 @@ export default function PromptHero() {
 
   return (
     <section className="hero draw-in" id="make">
-      <h1>What do you want to play into existence?</h1>
+      <h1>Create a game</h1>
       <form className="prompt-row" onSubmit={submit}>
         <div className={`prompt-frame${attn ? ' attn' : ''}`}>
           <HandFrame seed="prompt-box" strokeWidth={1.8} />
