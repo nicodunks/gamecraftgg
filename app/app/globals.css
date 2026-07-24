@@ -244,24 +244,30 @@ h1, h2, h3 { line-height: 1.1; margin: 0; }
    chrome above the stage (back link + title + margins ≈ 170px) — a 9:16
    stage capped only by width is 764px tall and forces page scroll on any
    laptop. Width is derived from the height budget via the aspect ratio. */
-.stage-portrait {
-  /* Fit BOTH the column width and the viewport height. --chrome is the page
-     furniture above/below the stage (header + title row + action bar + margins);
-     the height budget is 100dvh minus that, and the 9:16 width is DERIVED from
-     it so a tall game can never force page scroll on a laptop. */
+/* Compound selector (.stage-wrap.stage-portrait) so this OUTRANKS the plain
+   `.stage-wrap { margin: 20px 0 8px }` rule below it in source order —
+   otherwise that shorthand resets margin-inline to 0 and the stage pins left.
+   Fit BOTH the column width and the viewport height: --chrome is the page
+   furniture above/below the stage; the height budget is 100dvh minus that, and
+   the 9:16 width is DERIVED from it so a tall game can never overflow the
+   viewport. `margin: … auto` centers it in the main viewing column. */
+.stage-wrap.stage-portrait {
   --chrome: 210px;
   --stage-h: clamp(300px, calc(100dvh - var(--chrome)), 760px);
-  max-width: min(430px, 100%, calc(var(--stage-h) * 9 / 16));
-  margin-inline: auto;
+  width: calc(var(--stage-h) * 9 / 16);
+  max-width: 100%;
+  margin: 20px auto 8px;
 }
-.stage-portrait .game-stage {
-  aspect-ratio: 9 / 16;
-  max-height: var(--stage-h);
-  margin-inline: auto;
+.stage-wrap.stage-portrait .game-stage {
+  width: 100%;
+  height: var(--stage-h);
+  max-height: 100%;
+  aspect-ratio: auto;
 }
 @media (max-width: 760px) {
-  /* phones: use available width, far less fixed chrome */
-  .stage-portrait { --chrome: 140px; max-width: min(430px, 100%); }
+  /* phones: keep the height-derived width (so a 9:16 game still fits the
+     shorter viewport without bottom clipping), just less fixed chrome */
+  .stage-wrap.stage-portrait { --chrome: 190px; }
 }
 
 /* mobile viewing aids: a rotate nudge above the stage + a fullscreen button */
