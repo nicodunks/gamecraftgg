@@ -62,7 +62,14 @@ export function verifyWebhook(payload: string, headers: Headers): boolean {
   const ts = headers.get('webhook-timestamp') ?? '';
   const sigHeader = headers.get('webhook-signature') ?? '';
   if (!secretRaw || !id || !ts || !sigHeader) return false;
-  if (Math.abs(Date.now() / 1000 - Number(ts)) > 300) return false; // 5 min tolerance
+  // Reject only implausibly FUTURE-dated timestamps (clock-skew / forgery guard).
+  // We deliberately do NOT reject old timestamps: Polar retries failed deliveries
+  // with backoff over hours, and every retry carries the ORIGINAL event timestamp.
+  // A tight past-window silently drops legitimate paid orders (this is exactly the
+  // bug that lost the first real purchase). Replay is already harmless — the HMAC
+  // signature authenticates, and the ledger's UNIQUE(reason, ref_id) makes any
+  // reprocessing a no-op.
+  if (Number(ts) - Date.now() / 1000 > 3600) return false;
   const secret = Buffer.from(secretRaw.replace(/^whsec_/, ''), 'base64');
   const expected = crypto.createHmac('sha256', secret).update(`${id}.${ts}.${payload}`).digest('base64');
   return sigHeader.split(' ').some((part) => {
