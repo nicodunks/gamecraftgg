@@ -1,0 +1,1131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Pip's Longest Night</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#0c141c;overflow:hidden;touch-action:none;
+    -webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent;}
+  #c{display:block;width:100%;height:100%;background:#0c141c;}
+  *{cursor:crosshair;}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+(function(){
+"use strict";
+
+// ---------- constants ----------
+const VW = 720, VH = 720, CX = 360, CY = 360;
+const SLUG = (location.pathname.match(/\/play\/([a-z0-9-]+)/)||[])[1] || 'pips-longest-night';
+const BEST_KEY = 'gs_best:'+SLUG;
+const SEED = 1337;
+
+const DAWN = 180;                 // seconds to dawn
+const SEEK = 70;                  // lit ship seek speed
+const MAXTURN = 120*Math.PI/180;  // rad/s
+const DAMP = 0.985;
+const WANDER = 22;
+const BEAM_NARROW = 26*Math.PI/180;
+const BEAM_FLARE  = 68*Math.PI/180;
+const OILMAX = 100, OIL_DRAIN = 25, OIL_REC = 12;
+const HOPEMAX = 100, HOPE_WRECK = -18, HOPE_SAVE = 6;
+const SHIPR = 14, DOCKR = 110, ISLANDR = 86, MAXSHIPS = 8;
+
+// palette
+const P = {
+  paper:'#F4E9D0', paper2:'#E4D3AE', ink:'#14202B',
+  seaDeep:'#1B2A3A', seaMid:'#2E4A63',
+  beamCore:'#FFF4D6', beamEdge:'#FFD98A',
+  red:'#C7503F', sail:'#E9DCC3', rock:'#3A3A44',
+  foam:'#CFE3E8', harbor:'#7FB88F',
+  warn:'#E07A4B', urgent:'#E23B3B', gold:'#E7B84B',
+  flash:'#FBFBF2', peach:'#F2B98C', dawnSea:'#5A6E7E'
+};
+const FONT = "'Patrick Hand','Comic Sans MS','Segoe Print',cursive";
+
+// ---------- rng ----------
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+let rng = mulberry32(SEED);
+
+// ---------- canvas ----------
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let scale=1, offX=0, offY=0, dpr=1;
+function resize(){
+  dpr = Math.min(window.devicePixelRatio||1, 2.5);
+  const w=window.innerWidth, h=window.innerHeight;
+  canvas.width=Math.round(w*dpr); canvas.height=Math.round(h*dpr);
+  canvas.style.width=w+'px'; canvas.style.height=h+'px';
+  scale = Math.min(w,h)/VW;
+  offX = (w-VW*scale)/2; offY=(h-VH*scale)/2;
+}
+window.addEventListener('resize',resize); resize();
+
+// ---------- audio ----------
+let AC=null, hum=null, humGain=null, master=null, noiseBuf=null;
+function initAudio(){
+  if(AC) { if(AC.state==='suspended') AC.resume(); return; }
+  try{
+    AC = new (window.AudioContext||window.webkitAudioContext)();
+    master = AC.createGain(); master.gain.value=0.9; master.connect(AC.destination);
+    // noise buffer
+    noiseBuf = AC.createBuffer(1, AC.sampleRate*1.0, AC.sampleRate);
+    const d=noiseBuf.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+    // continuous beam hum
+    hum = AC.createOscillator(); hum.type='sine'; hum.frequency.value=92;
+    humGain = AC.createGain(); humGain.gain.value=0.0;
+    const humFilt = AC.createBiquadFilter(); humFilt.type='lowpass'; humFilt.frequency.value=600;
+    hum.connect(humGain); humGain.connect(humFilt); humFilt.connect(master); hum.start();
+  }catch(e){ AC=null; }
+}
+function tone(freq,dur,type,vol,glide){
+  if(!AC) return;
+  const t=AC.currentTime;
+  const o=AC.createOscillator(); o.type=type||'sine';
+  const g=AC.createGain();
+  const v=vol*(0.9+Math.random()*0.2);
+  o.frequency.setValueAtTime(freq*(0.95+Math.random()*0.1),t);
+  if(glide) o.frequency.exponentialRampToValueAtTime(Math.max(20,glide),t+dur);
+  g.gain.setValueAtTime(0.0001,t);
+  g.gain.exponentialRampToValueAtTime(v,t+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  o.connect(g); g.connect(master); o.start(t); o.stop(t+dur+0.02);
+}
+function noise(dur,vol,filtFreq,filtType){
+  if(!AC) return;
+  const t=AC.currentTime;
+  const s=AC.createBufferSource(); s.buffer=noiseBuf;
+  const g=AC.createGain();
+  const f=AC.createBiquadFilter(); f.type=filtType||'bandpass'; f.frequency.value=filtFreq||900; f.Q.value=0.8;
+  g.gain.setValueAtTime(vol,t);
+  g.gain.exponentialRampToValueAtTime(0.0001,t+dur);
+  s.connect(f); f.connect(g); g.connect(master); s.start(t); s.stop(t+dur);
+}
+function sfx(name){
+  if(!AC) return;
+  switch(name){
+    case 'chime': tone(880,0.18,'sine',0.14); tone(1320,0.16,'sine',0.08); break;
+    case 'save': tone(660,0.16,'triangle',0.16); tone(990,0.22,'sine',0.13); setTimeout(()=>tone(1320,0.2,'sine',0.09),70); break;
+    case 'cargo': tone(520,0.22,'triangle',0.18); tone(784,0.28,'sine',0.15); setTimeout(()=>{tone(1046,0.24,'sine',0.12);noise(0.25,0.08,4000,'highpass');},90); break;
+    case 'wreck': noise(0.35,0.4,700,'lowpass'); tone(120,0.4,'sawtooth',0.2,50); noise(0.5,0.25,2500,'highpass'); break;
+    case 'thunder': noise(1.1,0.5,220,'lowpass'); tone(60,1.0,'sine',0.25,35); break;
+    case 'foghorn': tone(150,0.7,'sawtooth',0.09,120); break;
+    case 'flare': noise(0.3,0.18,500,'lowpass'); tone(200,0.35,'sine',0.1,320); break;
+    case 'sputter': noise(0.12,0.14,1600,'bandpass'); break;
+    case 'distress': tone(240,0.5,'sawtooth',0.08,200); break;
+    case 'wave': noise(0.9,0.22,400,'lowpass'); break;
+    case 'dawn': tone(392,0.9,'sine',0.14); tone(523,0.9,'sine',0.12); tone(659,1.1,'sine',0.1); break;
+    case 'gull': tone(1400,0.09,'sine',0.05,1900); setTimeout(()=>tone(1250,0.08,'sine',0.04,1700),120); break;
+  }
+}
+
+// ---------- hand-drawn helpers ----------
+let boil=0, frameCount=0;
+function jit(seed){ let x=Math.sin(seed*12.9898+boil*4.17)*43758.5453; return (x-Math.floor(x))*2-1; }
+// static hand-drawn wobble (no boil): UI frames stay sketchy but perfectly still
+function jitS(seed){ let x=Math.sin(seed*12.9898+7.7)*43758.5453; return (x-Math.floor(x))*2-1; }
+function ink(w,col){ ctx.strokeStyle=col||P.ink; ctx.lineWidth=w||2.6; ctx.lineJoin='round'; ctx.lineCap='round'; }
+
+function wobbLine(x1,y1,x2,y2,amp,seed){
+  const dx=x2-x1, dy=y2-y1, len=Math.hypot(dx,dy);
+  const segs=Math.max(2,Math.round(len/16));
+  const nx=-dy/len, ny=dx/len;
+  ctx.beginPath();
+  for(let i=0;i<=segs;i++){
+    const t=i/segs; const o=(i===0||i===segs)?0:jit(seed+i*7.3)*amp;
+    const px=x1+dx*t+nx*o, py=y1+dy*t+ny*o;
+    if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+  }
+  ctx.stroke();
+}
+function wobbCircPath(cx,cy,r,amp,seed){
+  const segs=Math.max(10,Math.round(r/3));
+  ctx.beginPath();
+  for(let i=0;i<=segs;i++){
+    const a=i/segs*Math.PI*2;
+    const rr=r+jit(seed+i*3.1)*amp;
+    const px=cx+Math.cos(a)*rr, py=cy+Math.sin(a)*rr;
+    if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+  }
+  ctx.closePath();
+}
+function wobbCirc(cx,cy,r,amp,seed,w,col){ ink(w,col); wobbCircPath(cx,cy,r,amp,seed); ctx.stroke(); }
+function crosshatch(cx,cy,r,seed,col,spacing){
+  ctx.save(); wobbCircPath(cx,cy,r,1.5,seed); ctx.clip();
+  ink(1.2,col); ctx.globalAlpha=0.5;
+  const sp=spacing||6;
+  for(let x=cx-r;x<cx+r;x+=sp){ wobbLine(x,cy-r,x+r*0.6,cy+r,1,seed+x); }
+  ctx.globalAlpha=1; ctx.restore();
+}
+
+function drawText(txt,x,y,size,col,align,jitter){
+  ctx.font=size+"px "+FONT;
+  ctx.textAlign=align||'center'; ctx.textBaseline='middle';
+  const jx=jitter?jit(x+txt.length)*1.2:0, jy=jitter?jit(y+7)*1.2:0;
+  ctx.fillStyle='rgba(20,32,43,0.25)';
+  ctx.fillText(txt,x+jx+2,y+jy+2);
+  ctx.fillStyle=col||P.ink;
+  ctx.fillText(txt,x+jx,y+jy);
+}
+
+// ---------- game state ----------
+let state='splash';
+let t=0, dawnFlash=0, dawnGlow=0;
+let ships=[], particles=[], rocks=[], foams=[];
+let hope=HOPEMAX, oil=OILMAX, savedScore=0, savedCount=0, cargoCount=0;
+let beamAng=-Math.PI/2, prevBeamAng=-Math.PI/2, beamVel=0, keyAim=0, aimMode='pointer';
+let flareMouse=false, flareKey=false, flareBtn=false, flareLevel=0, flareOn=false, sputterCd=0;
+let shake=0, hitstop=0;
+let lightningTimer=4, lightning=0, rogueTimer=8;
+let gustTimer=3, gust=0;
+let keeper={state:'idle',timer:0,crank:0};
+let scorePop=0, hopePulse=0, phaseCard={txt:'',sub:'',timer:0};
+let hintTimer=8, interacted=false, hasTouched=false;
+let best=parseInt(localStorage.getItem(BEST_KEY)||'0')||0;
+let lastScoreMsg=0;
+let challenge=parseInt((new URLSearchParams(location.search)).get('c')||'0')||0;
+let challengeBeaten=false;
+
+// pointer
+let pointer={x:CX,y:CY,active:false,type:'mouse'};
+
+const PHASES=[
+  {name:'DUSK', sub:'the lamp is lit', end:35, wind:14, spawn:4.4, cargo:0,    lit:false, rogue:false},
+  {name:'SQUALL', sub:'wind rising', end:90, wind:30, spawn:2.5, cargo:0.22, lit:true,  rogue:false},
+  {name:'MIDNIGHT FURY', sub:'hold the light', end:150, wind:46, spawn:1.5, cargo:0.36, lit:true, rogue:true},
+  {name:'FIRST LIGHT', sub:'dawn is near', end:180, wind:22, spawn:2.1, cargo:0.24, lit:true, rogue:false}
+];
+function phaseIndex(){ for(let i=0;i<PHASES.length;i++) if(t<PHASES[i].end) return i; return 3; }
+let curPhase=0;
+
+function genRocks(){
+  rocks=[];
+  const n=8;
+  for(let i=0;i<n;i++){
+    const a=(i/n)*Math.PI*2 + (rng()-0.5)*0.5;
+    const rad=155+rng()*85;
+    const sz=20+rng()*15;
+    rocks.push({x:CX+Math.cos(a)*rad, y:CY+Math.sin(a)*rad, size:sz, core:sz*0.62, ang:a, seed:i*137+3});
+  }
+}
+
+function initRun(){
+  rng=mulberry32(SEED);
+  t=0; ships=[]; particles=[]; foams=[];
+  hope=HOPEMAX; oil=OILMAX; savedScore=0; savedCount=0; cargoCount=0;
+  beamAng=-Math.PI/2; prevBeamAng=beamAng; beamVel=0;
+  flareMouse=flareKey=flareBtn=false; flareLevel=0; flareOn=false; sputterCd=0;
+  shake=0; hitstop=0; lightning=0; lightningTimer=6; rogueTimer=9; gust=0; gustTimer=4;
+  keeper={state:'idle',timer:0,crank:0};
+  scorePop=0; hopePulse=0; phaseCard={txt:'',sub:'',timer:0};
+  hintTimer=8; dawnFlash=0; dawnGlow=0; dawnLow=0;
+  challengeBeaten=false;
+  curPhase=-1;
+  genRocks();
+  spawnTimer=2.0;
+  state='playing';
+  showPhaseCard(0);
+}
+let spawnTimer=2, dawnLow=0;
+
+function showPhaseCard(i){
+  const p=PHASES[i];
+  phaseCard={txt:p.name, sub:p.sub, timer:2.6};
+}
+
+// ---------- ships ----------
+function spawnShip(cargo){
+  let ang, rad=352;
+  if(cargo){
+    const rk=rocks[Math.floor(rng()*rocks.length)];
+    ang=rk.ang+(rng()-0.5)*0.28;
+  } else {
+    ang=rng()*Math.PI*2;
+  }
+  const x=CX+Math.cos(ang)*rad, y=CY+Math.sin(ang)*rad;
+  const toward=Math.atan2(CY-y,CX-x);
+  const sp=32;
+  ships.push({
+    x,y, vx:Math.cos(toward)*sp, vy:Math.sin(toward)*sp,
+    heading:toward, cargo:!!cargo, lit:false, wasLit:false,
+    distress:false, distressCd:0, litGlow:0, born:0, seed:Math.floor(rng()*9999),
+    bob:rng()*6.28, sail:cargo?P.gold:P.sail
+  });
+  sfx('foghorn');
+}
+
+function windVec(){
+  const p=PHASES[curPhase];
+  const base=p?p.wind:14;
+  const ang=Math.PI*0.55 + Math.sin(t*0.19)*0.9 + Math.cos(t*0.07)*0.4;
+  const mag=base + gust;
+  return {x:Math.cos(ang)*mag, y:Math.sin(ang)*mag, mag};
+}
+
+function nearestRock(x,y){
+  let best=null, bd=1e9;
+  for(const r of rocks){ const d=Math.hypot(r.x-x,r.y-y); if(d<bd){bd=d;best=r;} }
+  return {rock:best, dist:bd};
+}
+
+function updateShip(s,dt){
+  s.born+=dt; s.bob+=dt*3;
+  if(s.distressCd>0) s.distressCd-=dt;
+  // lit test
+  const sAng=Math.atan2(s.y-CY,s.x-CX);
+  let half=(flareLevel>0.02? BEAM_NARROW+(BEAM_FLARE-BEAM_NARROW)*flareLevel : BEAM_NARROW)/2;
+  const lit = Math.abs(angDiff(sAng,beamAng))<half;
+  s.lit=lit;
+  s.litGlow += ((lit?1:0)-s.litGlow)*Math.min(1,dt*8);
+  if(lit && !s.wasLit){ sfx('chime'); }
+  s.wasLit=lit;
+
+  const distC=Math.hypot(CX-s.x,CY-s.y);
+  if(lit){
+    // seek center + avoid rocks
+    let dx=(CX-s.x)/distC, dy=(CY-s.y)/distC;
+    let ax=dx, ay=dy;
+    for(const r of rocks){
+      const rd=Math.hypot(r.x-s.x,r.y-s.y);
+      const infl=r.size+SHIPR+58;
+      if(rd<infl){
+        const w=(infl-rd)/infl;
+        ax += ((s.x-r.x)/rd)*w*2.2;
+        ay += ((s.y-r.y)/rd)*w*2.2;
+      }
+    }
+    const al=Math.hypot(ax,ay)||1;
+    const desAng=Math.atan2(ay/al,ax/al);
+    let d=angDiff(desAng,s.heading);
+    const maxd=MAXTURN*dt;
+    if(d>maxd)d=maxd; if(d<-maxd)d=-maxd;
+    s.heading+=d;
+    s.vx=Math.cos(s.heading)*SEEK; s.vy=Math.sin(s.heading)*SEEK;
+    s.distress=false;
+  } else {
+    // drift under wind
+    const w=windVec();
+    s.vx += w.x*dt; s.vy += w.y*dt;
+    s.vx += (rng()-0.5)*WANDER*dt; s.vy += (rng()-0.5)*WANDER*dt;
+    const df=Math.pow(DAMP,dt*60);
+    s.vx*=df; s.vy*=df;
+    const sp=Math.hypot(s.vx,s.vy);
+    if(sp>130){ s.vx=s.vx/sp*130; s.vy=s.vy/sp*130; }
+    if(sp>1) s.heading=Math.atan2(s.vy,s.vx);
+    // distress detection
+    const nr=nearestRock(s.x,s.y);
+    const towardRock = nr.rock ? ((nr.rock.x-s.x)*s.vx+(nr.rock.y-s.y)*s.vy)>0 : false;
+    const wasD=s.distress;
+    s.distress = nr.dist<105 && towardRock;
+    if(s.distress && !wasD && s.distressCd<=0){ sfx('distress'); s.distressCd=1.2; }
+  }
+  s.x+=s.vx*dt; s.y+=s.vy*dt;
+
+  // dock (save)
+  if(distC<DOCKR){ saveShip(s); return false; }
+  // wreck on rock
+  for(const r of rocks){
+    const rd=Math.hypot(r.x-s.x,r.y-s.y);
+    if(rd < r.core+SHIPR-6){ wreckShip(s,r); return false; }
+  }
+  // drifted far out -> neutral despawn
+  if(distC>500) return false;
+  return true;
+}
+
+function angDiff(a,b){ let d=a-b; while(d>Math.PI)d-=2*Math.PI; while(d<-Math.PI)d+=2*Math.PI; return d; }
+
+function saveShip(s){
+  const pts=s.cargo?3:1;
+  savedScore+=pts; savedCount++; if(s.cargo)cargoCount++;
+  hope=Math.min(HOPEMAX,hope+HOPE_SAVE); hopePulse=1;
+  scorePop=1;
+  keeper.state='jump'; keeper.timer=0.5;
+  sfx(s.cargo?'cargo':'save');
+  // green sparks near dock
+  const a=Math.atan2(s.y-CY,s.x-CX);
+  const px=CX+Math.cos(a)*ISLANDR, py=CY+Math.sin(a)*ISLANDR;
+  for(let i=0;i<(s.cargo?14:8);i++){
+    particles.push({x:px,y:py,vx:(rng()-0.5)*90,vy:(rng()-0.5)*90-40,
+      life:0.7,max:0.7,col:s.cargo?P.gold:P.harbor,type:'spark',r:2+rng()*2});
+  }
+  foams.push({x:px,y:py,r:6,max:38,life:0.5,col:P.harbor});
+  postScore();
+  if(challenge>0 && savedScore>challenge && !challengeBeaten){
+    challengeBeaten=true; scorePop=1.4;
+    try{parent.postMessage({gs:'challenge_beaten',score:savedScore},'*');}catch(e){}
+    for(let i=0;i<20;i++) particles.push({x:CX,y:CY-40,vx:(rng()-0.5)*160,vy:-rng()*140,life:1,max:1,col:P.gold,type:'spark',r:3});
+  }
+}
+
+function wreckShip(s,r){
+  hope=Math.max(0,hope+HOPE_WRECK);
+  shake=Math.min(16,shake+11); hitstop=0.05;
+  keeper.state='despair'; keeper.timer=0.6;
+  sfx('wreck');
+  // splinters + crates
+  for(let i=0;i<10;i++){
+    particles.push({x:s.x,y:s.y,vx:(rng()-0.5)*140,vy:(rng()-0.5)*140-30,
+      life:0.9+rng()*0.4,max:1.3,col:P.sail,type:'splinter',r:3+rng()*4,rot:rng()*6.28,vr:(rng()-0.5)*12});
+  }
+  if(s.cargo) for(let i=0;i<4;i++){
+    particles.push({x:s.x,y:s.y,vx:(rng()-0.5)*110,vy:-rng()*120,
+      life:1.2,max:1.2,col:P.gold,type:'crate',r:6+rng()*3,rot:rng()*6.28,vr:(rng()-0.5)*8});
+  }
+  // splash
+  for(let i=0;i<10;i++) particles.push({x:s.x,y:s.y,vx:(rng()-0.5)*80,vy:-rng()*90,life:0.6,max:0.6,col:P.foam,type:'spark',r:2});
+  foams.push({x:s.x,y:s.y,r:8,max:44,life:0.6,col:P.foam});
+  if(hope<=0 && state==='playing'){ endRun(false); }
+}
+
+// ---------- events / timers ----------
+function updateTimers(dt){
+  // gust schedule (bursty spikes that decay in <1.5s)
+  const p=PHASES[curPhase];
+  gustTimer-=dt;
+  if(gustTimer<=0){
+    gust = (p&&p.name==='SQUALL'?42 : p&&p.name==='MIDNIGHT FURY'?46 : 22);
+    gustTimer = 3+rng()*3;          // time until next gust
+  }
+  if(gust>0){ gust-=dt*70; if(gust<0)gust=0; }
+
+  // lightning (squall onward)
+  if(p && (p.name==='SQUALL'||p.name==='MIDNIGHT FURY'||p.name==='FIRST LIGHT')){
+    lightningTimer-=dt;
+    if(lightningTimer<=0){
+      lightning=1; sfx('thunder'); shake=Math.min(14,shake+7);
+      lightningTimer = (p.name==='MIDNIGHT FURY'? 4+rng()*4 : 6+rng()*5);
+    }
+  }
+  if(lightning>0){ lightning-=dt*3.2; if(lightning<0)lightning=0; }
+
+  // rogue waves (midnight)
+  if(p && p.rogue){
+    rogueTimer-=dt;
+    if(rogueTimer<=0){
+      rogueTimer=6+rng()*4;
+      const wa=rng()*Math.PI*2;
+      const imp=62;
+      for(const s of ships){ if(!s.lit){ s.vx+=Math.cos(wa)*imp; s.vy+=Math.sin(wa)*imp; } }
+      sfx('wave');
+      // visual foam wall
+      foams.push({x:CX,y:CY,r:20,max:420,life:1.1,col:P.foam,wave:true});
+    }
+  }
+}
+
+// ---------- particles ----------
+function updateParticles(dt){
+  for(let i=particles.length-1;i>=0;i--){
+    const pr=particles[i];
+    pr.life-=dt; if(pr.life<=0){ particles.splice(i,1); continue; }
+    pr.x+=pr.vx*dt; pr.y+=pr.vy*dt;
+    pr.vy+=(pr.type==='spark'?260:170)*dt;
+    pr.vx*=0.98;
+    if(pr.rot!==undefined) pr.rot+=pr.vr*dt;
+  }
+  for(let i=foams.length-1;i>=0;i--){
+    const f=foams[i]; f.life-=dt; if(f.life<=0){foams.splice(i,1);continue;}
+    f.r+=(f.max-f.r)*Math.min(1,dt*(f.wave?3:6));
+  }
+}
+
+// ---------- update ----------
+let lastT=performance.now();
+function update(dt){
+  frameCount++; if(frameCount%8===0) boil++; // subtle artwork boil only
+  keeper.crank+=dt*3.2;
+  if(keeper.timer>0){ keeper.timer-=dt; if(keeper.timer<=0) keeper.state='idle'; }
+  scorePop=Math.max(0,scorePop-dt*2.2);
+  hopePulse=Math.max(0,hopePulse-dt*2.4);
+  if(phaseCard.timer>0) phaseCard.timer-=dt;
+  if(shake>0) shake*=Math.pow(0.02,dt);
+  if(shake<0.2)shake=0;
+
+  // beam velocity for hum
+  beamVel = Math.abs(angDiff(beamAng,prevBeamAng))/Math.max(dt,0.001);
+  prevBeamAng=beamAng;
+  updateHum();
+
+  if(state!=='playing'){
+    updateParticles(dt);
+    if(state==='dawn'){ dawnFlash=Math.min(1,dawnFlash+dt*0.4); }
+    return;
+  }
+
+  if(hitstop>0){ hitstop-=dt; return; }
+
+  t+=dt;
+  dawnGlow = t/DAWN;
+  // phase transitions
+  const pi=phaseIndex();
+  if(pi!==curPhase){ curPhase=pi; if(t>0.5||pi>0){ showPhaseCard(pi); if(pi>0){sfx('thunder'); shake=Math.min(12,shake+5);} } }
+
+  // flare / oil
+  const holding=(flareMouse||flareKey||flareBtn);
+  const wantFlare=holding && oil>0;
+  if(wantFlare){
+    if(!flareOn){ flareOn=true; sfx('flare'); }
+    oil=Math.max(0,oil-OIL_DRAIN*dt);
+    flareLevel=Math.min(1,flareLevel+dt*5);
+  } else {
+    flareOn=false;
+    oil=Math.min(OILMAX,oil+OIL_REC*dt);
+    flareLevel=Math.max(0,flareLevel-dt*6);
+    if(holding && oil<=0){ sputterCd-=dt; if(sputterCd<=0){ sfx('sputter'); sputterCd=0.35; } }
+  }
+
+  // keyboard aim
+  if(aimMode==='key' && keyAim!==0){ beamAng+=keyAim*3.4*dt; }
+
+  updateTimers(dt);
+
+  // spawn
+  const p=PHASES[curPhase];
+  spawnTimer-=dt;
+  if(spawnTimer<=0 && ships.length<MAXSHIPS){
+    spawnShip(rng()<p.cargo);
+    spawnTimer = p.spawn*(0.7+rng()*0.6);
+    // dusk very sparse
+    if(p.name==='DUSK' && ships.length>=2) spawnTimer+=3;
+  }
+
+  for(let i=ships.length-1;i>=0;i--){ if(!updateShip(ships[i],dt)) ships.splice(i,1); }
+  updateParticles(dt);
+
+  // dawn / win
+  if(t>=DAWN){ endRun(true); }
+}
+
+function endRun(win){
+  state = win?'dawn':'over';
+  dawnFlash=0;
+  if(win){ sfx('dawn'); setTimeout(()=>sfx('gull'),500); setTimeout(()=>sfx('gull'),1100); }
+  if(savedScore>best){ best=savedScore; localStorage.setItem(BEST_KEY,best); }
+  try{parent.postMessage({gs:'gameover',score:savedScore},'*');}catch(e){}
+}
+function postScore(){
+  const now=performance.now();
+  if(now-lastScoreMsg>250){ lastScoreMsg=now; try{parent.postMessage({gs:'score',score:savedScore},'*');}catch(e){} }
+}
+function updateHum(){
+  if(!AC||!humGain) return;
+  const target = state==='playing' ? 0.05 : 0.0;
+  humGain.gain.value += (target-humGain.gain.value)*0.1;
+  const f = 88 + Math.min(beamVel*10,90) + flareLevel*30;
+  hum.frequency.value += (f-hum.frequency.value)*0.2;
+}
+
+// ---------- render ----------
+function render(){
+  const w=canvas.width, h=canvas.height;
+  ctx.setTransform(1,0,0,1,0,0);
+  // letterbox
+  ctx.fillStyle='#0c141c'; ctx.fillRect(0,0,w,h);
+  ctx.setTransform(dpr*scale,0,0,dpr*scale,offX*dpr,offY*dpr);
+  // shake
+  const sh = shake>0 ? shake : 0;
+  if(sh>0){ ctx.translate(jit(frameCount)*sh, jit(frameCount+3)*sh); }
+
+  // clip to play square
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0,0,VW,VH); ctx.clip();
+
+  drawSea();
+  drawBeamWater();
+  drawRocks();
+  drawFoams();
+  drawShips();
+  drawParticles();
+  drawIsland();
+  drawBeamLight();
+  drawRain();
+
+  // lightning flash
+  if(lightning>0){ ctx.fillStyle='rgba(251,251,242,'+(lightning*0.55)+')'; ctx.fillRect(0,0,VW,VH); }
+  // dawn warm overlay
+  drawDawnOverlay();
+
+  ctx.restore();
+
+  drawFrame();
+  drawHUD();
+
+  if(state==='splash') drawSplash();
+  else if(state==='over') drawScoreCard(false);
+  else if(state==='dawn') drawScoreCard(true);
+}
+
+function seaColors(){
+  // interpolate toward dawn during first light
+  let warm = 0;
+  if(curPhase===3) warm=Math.min(1,(t-150)/30);
+  if(state==='dawn') warm=1;
+  const deep = lerpCol(P.seaDeep, P.dawnSea, warm*0.75);
+  const mid  = lerpCol(P.seaMid, P.peach, warm*0.4);
+  return {deep,mid,warm};
+}
+function lerpCol(a,b,f){
+  const pa=hex(a),pb=hex(b);
+  return 'rgb('+Math.round(pa[0]+(pb[0]-pa[0])*f)+','+Math.round(pa[1]+(pb[1]-pa[1])*f)+','+Math.round(pa[2]+(pb[2]-pa[2])*f)+')';
+}
+function hex(c){
+  if(c[0]==='#') return [parseInt(c.slice(1,3),16),parseInt(c.slice(3,5),16),parseInt(c.slice(5,7),16)];
+  const m=c.match(/rgba?\(([^)]+)\)/);
+  if(m){ const p=m[1].split(',').map(s=>parseFloat(s)); return [p[0]|0,p[1]|0,p[2]|0]; }
+  return [0,0,0];
+}
+
+function drawSea(){
+  const sc=seaColors();
+  const g=ctx.createRadialGradient(CX,CY,60,CX,CY,420);
+  g.addColorStop(0,sc.mid);
+  g.addColorStop(0.35,sc.deep);
+  g.addColorStop(1,lerpCol(sc.deep,'#0c141c',0.35));
+  ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
+  // outer edge brighten toward dawn (horizon)
+  if(dawnGlow>0||state==='dawn'){
+    const dg = state==='dawn'?1:dawnGlow;
+    const g2=ctx.createRadialGradient(CX,CY,300,CX,CY,470);
+    g2.addColorStop(0,'rgba(242,185,140,0)');
+    g2.addColorStop(1,'rgba(242,185,140,'+(dg*0.35)+')');
+    ctx.fillStyle=g2; ctx.fillRect(0,0,VW,VH);
+  }
+  // cross-hatched swells
+  ctx.save(); ctx.globalAlpha=0.10; ink(1.4,P.foam);
+  const off=(t*8)%26;
+  for(let y=-26;y<VH+26;y+=26){
+    wobbLine(0,y+off,VW,y+off+6,2,y*1.3);
+  }
+  ctx.globalAlpha=0.06;
+  for(let x=-26;x<VW+26;x+=34){ wobbLine(x,0,x+10,VH,2,x*0.7); }
+  ctx.restore();
+}
+
+function drawBeamWater(){
+  // lit water sector (brighter)
+  const half=(BEAM_NARROW+(BEAM_FLARE-BEAM_NARROW)*flareLevel)/2;
+  const sc=seaColors();
+  ctx.save();
+  ctx.beginPath(); ctx.moveTo(CX,CY);
+  ctx.arc(CX,CY,470,beamAng-half,beamAng+half); ctx.closePath();
+  ctx.clip();
+  const g=ctx.createRadialGradient(CX,CY,40,CX,CY,470);
+  g.addColorStop(0,lerpCol(sc.mid,P.beamCore,0.35));
+  g.addColorStop(0.5,sc.mid);
+  g.addColorStop(1,'rgba(46,74,99,0)');
+  ctx.fillStyle=g; ctx.globalAlpha=0.55+flareLevel*0.2; ctx.fillRect(0,0,VW,VH);
+  ctx.restore();
+}
+
+function drawRocks(){
+  for(const r of rocks){
+    ctx.save();
+    // scribbled lump: overlapping wobbly circles
+    ctx.fillStyle=P.rock;
+    wobbCircPath(r.x,r.y,r.size,2.5,r.seed); ctx.fill();
+    wobbCircPath(r.x-r.size*0.3,r.y-r.size*0.2,r.size*0.6,2,r.seed+9); ctx.fill();
+    crosshatch(r.x,r.y,r.size,r.seed,'#20202a',5);
+    wobbCirc(r.x,r.y,r.size,2.5,r.seed,3,P.ink);
+    // foam ring at base
+    ctx.globalAlpha=0.5; ink(1.6,P.foam);
+    wobbCircPath(r.x,r.y,r.size+5+Math.sin(t*3+r.seed)*2,2,r.seed+21); ctx.stroke();
+    ctx.restore();
+  }
+}
+
+function drawFoams(){
+  for(const f of foams){
+    ctx.save();
+    ctx.globalAlpha=Math.max(0,f.life/(f.wave?1.1:0.6))*0.7;
+    ink(f.wave?3:2,f.col);
+    wobbCircPath(f.x,f.y,f.r,3,f.x+f.y); ctx.stroke();
+    if(f.wave){ ctx.globalAlpha*=0.6; wobbCircPath(f.x,f.y,f.r*0.85,3,f.x+f.y+5); ctx.stroke(); }
+    ctx.restore();
+  }
+}
+
+function drawShips(){
+  for(const s of ships){
+    const bob=Math.sin(s.bob)*2;
+    const spawnEase=Math.min(1,s.born*3);
+    ctx.save();
+    ctx.translate(s.x,s.y+bob);
+    ctx.scale(spawnEase,spawnEase);
+    ctx.rotate(s.heading+Math.PI/2);
+    // visibility: lit or lightning reveal
+    const reveal=Math.max(s.litGlow, lightning*0.9);
+    const dim = 0.35+reveal*0.65;
+    // water displacement ripple
+    ctx.globalAlpha=0.4*dim; ink(1.4,P.foam);
+    wobbCircPath(0,6,SHIPR+3+Math.sin(t*4+s.seed)*1.5,1.5,s.seed); ctx.stroke();
+    ctx.globalAlpha=1;
+    // distress / warning glow
+    if(s.distress && !s.lit){
+      const fl=(Math.sin(t*16)>0);
+      ctx.globalAlpha=0.5; ctx.fillStyle=fl?P.urgent:P.warn;
+      wobbCircPath(0,0,SHIPR+8,2,s.seed+3); ctx.fill(); ctx.globalAlpha=1;
+    }
+    if(reveal>0.1){
+      ctx.save(); ctx.globalAlpha=reveal*0.5;
+      ctx.fillStyle=P.beamCore; wobbCircPath(0,0,SHIPR+10,2,s.seed+5); ctx.fill(); ctx.restore();
+    }
+    ctx.globalAlpha=dim;
+    // hull
+    ctx.fillStyle=P.ink;
+    ctx.beginPath();
+    ctx.moveTo(-SHIPR,-2);
+    ctx.quadraticCurveTo(-SHIPR*0.7,10,0,11);
+    ctx.quadraticCurveTo(SHIPR*0.7,10,SHIPR,-2);
+    ctx.quadraticCurveTo(0,-6,-SHIPR,-2);
+    ctx.closePath(); ctx.fill();
+    ctx.fillStyle=s.cargo?'#6b4a2a':'#4a3826';
+    ctx.fill();
+    ink(2.4,P.ink);
+    ctx.beginPath();
+    ctx.moveTo(-SHIPR,-2);
+    ctx.quadraticCurveTo(-SHIPR*0.7,10,0,11);
+    ctx.quadraticCurveTo(SHIPR*0.7,10,SHIPR,-2);
+    ctx.stroke();
+    // mast + sail
+    ink(2.2,P.ink); wobbLine(0,-4,0,-20,1,s.seed+7);
+    ctx.fillStyle=s.sail;
+    ctx.beginPath(); ctx.moveTo(1,-19); ctx.quadraticCurveTo(11,-13,2,-5); ctx.closePath(); ctx.fill();
+    ink(2,P.ink); ctx.beginPath(); ctx.moveTo(1,-19); ctx.quadraticCurveTo(11,-13,2,-5); ctx.stroke();
+    if(s.cargo){ // gold crate on deck
+      ctx.fillStyle=P.gold; ctx.fillRect(-5,-1,10,7); ink(1.8,P.ink); ctx.strokeRect(-5,-1,10,7);
+      wobbLine(-5,2.5,5,2.5,0.6,s.seed+11);
+    }
+    // lantern
+    ctx.fillStyle = s.lit? P.beamCore : (s.distress?P.warn:'#8a7550');
+    ctx.beginPath(); ctx.arc(-SHIPR+2,-4,2.4,0,6.28); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function drawParticles(){
+  for(const pr of particles){
+    const a=Math.max(0,pr.life/pr.max);
+    ctx.save(); ctx.globalAlpha=a;
+    if(pr.type==='spark'){
+      ctx.fillStyle=pr.col; ctx.beginPath(); ctx.arc(pr.x,pr.y,pr.r,0,6.28); ctx.fill();
+    } else if(pr.type==='splinter'){
+      ctx.translate(pr.x,pr.y); ctx.rotate(pr.rot);
+      ink(2.4,pr.col); wobbLine(-pr.r,0,pr.r,0,1,pr.x);
+    } else if(pr.type==='crate'){
+      ctx.translate(pr.x,pr.y); ctx.rotate(pr.rot);
+      ctx.fillStyle=pr.col; ctx.fillRect(-pr.r,-pr.r,pr.r*2,pr.r*2);
+      ink(2,P.ink); ctx.strokeRect(-pr.r,-pr.r,pr.r*2,pr.r*2);
+    }
+    ctx.restore();
+  }
+}
+
+function drawIsland(){
+  ctx.save();
+  // island rock base
+  ctx.fillStyle=P.rock;
+  wobbCircPath(CX,CY+8,ISLANDR,3,777); ctx.fill();
+  crosshatch(CX,CY+8,ISLANDR,777,'#20202a',7);
+  wobbCirc(CX,CY+8,ISLANDR,3,777,3.4,P.ink);
+  // harbor lantern glow ring
+  const hg=0.35+0.15*Math.sin(t*2)+savedCount*0;
+  ctx.globalAlpha=0.4; ink(3,P.harbor);
+  wobbCircPath(CX,CY+8,ISLANDR-6,2.5,780); ctx.stroke();
+  ctx.globalAlpha=1;
+  // small docks + safe lantern
+  ctx.fillStyle=P.harbor;
+  ctx.beginPath(); ctx.arc(CX,CY+ISLANDR-6,4,0,6.28); ctx.fill();
+
+  // lighthouse tower (fat tapered cylinder, barber stripe)
+  const bx=CX, by=CY-6;
+  const tw=42, twTop=30, th=96;
+  ctx.save();
+  ctx.translate(bx,by);
+  // body
+  ctx.beginPath();
+  ctx.moveTo(-tw/2,0); ctx.lineTo(-twTop/2,-th); ctx.lineTo(twTop/2,-th); ctx.lineTo(tw/2,0); ctx.closePath();
+  ctx.fillStyle=P.paper; ctx.fill();
+  // red barber stripes
+  ctx.save(); ctx.clip();
+  ctx.fillStyle=P.red;
+  for(let i=0;i<5;i++){ const y=-i*24; ctx.beginPath(); ctx.moveTo(-tw,y); ctx.lineTo(tw,y-10); ctx.lineTo(tw,y-24); ctx.lineTo(-tw,y-14); ctx.closePath(); ctx.fill(); }
+  ctx.restore();
+  ink(3,P.ink);
+  ctx.beginPath(); ctx.moveTo(-tw/2,0); ctx.lineTo(-twTop/2,-th); ctx.lineTo(twTop/2,-th); ctx.lineTo(tw/2,0); ctx.closePath(); ctx.stroke();
+  // gallery
+  ctx.fillStyle=P.ink; ctx.fillRect(-twTop/2-5,-th-7,twTop+10,7);
+  // lamp room (glowing)
+  const lampG=ctx.createRadialGradient(0,-th-20,2,0,-th-20,26);
+  lampG.addColorStop(0,'rgba(255,244,214,0.95)'); lampG.addColorStop(1,'rgba(255,217,138,0)');
+  ctx.fillStyle=lampG; ctx.beginPath(); ctx.arc(0,-th-20,26,0,6.28); ctx.fill();
+  ctx.fillStyle=P.beamCore; wobbCircPath(0,-th-18,11,1.5,55); ctx.fill();
+  ink(2.6,P.ink); wobbCircPath(0,-th-18,11,1.5,55); ctx.stroke();
+  // roof
+  ctx.fillStyle=P.red; ctx.beginPath(); ctx.moveTo(-14,-th-26); ctx.lineTo(0,-th-40); ctx.lineTo(14,-th-26); ctx.closePath(); ctx.fill();
+  ink(2.6,P.ink); ctx.beginPath(); ctx.moveTo(-14,-th-26); ctx.lineTo(0,-th-40); ctx.lineTo(14,-th-26); ctx.closePath(); ctx.stroke();
+
+  // keeper Pip on gallery
+  drawKeeper(0,-th-2);
+  ctx.restore();
+  ctx.restore();
+}
+
+function drawKeeper(x,y){
+  ctx.save(); ctx.translate(x-13,y);
+  const jump = keeper.state==='jump'? -6*Math.sin(Math.min(1,(0.5-keeper.timer)/0.5)*Math.PI):0;
+  ctx.translate(0,jump);
+  // body
+  ctx.fillStyle=P.red; ctx.beginPath(); ctx.arc(0,0,5,0,6.28); ctx.fill();
+  ink(2,P.ink); ctx.beginPath(); ctx.arc(0,0,5,0,6.28); ctx.stroke();
+  // head
+  ctx.fillStyle=P.sail; ctx.beginPath(); ctx.arc(0,-7,3.5,0,6.28); ctx.fill();
+  ink(1.6,P.ink); ctx.beginPath(); ctx.arc(0,-7,3.5,0,6.28); ctx.stroke();
+  // hat
+  ctx.fillStyle=P.ink; ctx.fillRect(-4,-11,8,2.5); ctx.fillRect(-2.5,-13,5,2.5);
+  // arm: crank / despair
+  ink(2,P.ink);
+  if(keeper.state==='despair'){ wobbLine(0,-4,3,-11,0.5,1); wobbLine(-1,-4,-4,-11,0.5,2); } // hat clutch
+  else { const ca=keeper.crank; wobbLine(2,-2,5+Math.cos(ca)*4,-1+Math.sin(ca)*4,0.5,3); }
+  ctx.restore();
+}
+
+function drawBeamLight(){
+  const half=(BEAM_NARROW+(BEAM_FLARE-BEAM_NARROW)*flareLevel)/2;
+  const flick=0.82+0.18*Math.abs(jit(frameCount*1.3));
+  ctx.save();
+  ctx.globalCompositeOperation='lighter';
+  ctx.beginPath(); ctx.moveTo(CX,CY);
+  ctx.arc(CX,CY,520,beamAng-half,beamAng+half); ctx.closePath();
+  ctx.clip();
+  const g=ctx.createRadialGradient(CX,CY,20,CX,CY,520);
+  const inten=(0.42+flareLevel*0.35)*flick;
+  g.addColorStop(0,'rgba(255,244,214,'+inten+')');
+  g.addColorStop(0.4,'rgba(255,232,180,'+(inten*0.6)+')');
+  g.addColorStop(1,'rgba(255,217,138,0)');
+  ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
+  // grain streaks
+  ctx.globalAlpha=0.12*flick; ink(1.2,P.beamCore);
+  for(let i=0;i<5;i++){ const a=beamAng-half+ (i/4)*half*2; wobbLine(CX,CY,CX+Math.cos(a)*500,CY+Math.sin(a)*500,3,i*30+frameCount); }
+  ctx.restore();
+}
+
+function drawRain(){
+  if(!PHASES[curPhase]) return;
+  const p=PHASES[curPhase];
+  let n = p.name==='DUSK'?18 : p.name==='SQUALL'?48 : p.name==='MIDNIGHT FURY'?85 : 30;
+  if(state==='dawn') n=8;
+  ctx.save(); ctx.globalAlpha=0.28; ink(1.4,P.foam);
+  const wind=windVec();
+  const wx=wind.x*0.12;
+  for(let i=0;i<n;i++){
+    const s=i*97.3;
+    const x=(jit(s)*0.5+0.5)*VW;
+    const y=((s*7.1 + t*(340+p.wind*3))%VH);
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x-wx-2,y+11); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawDawnOverlay(){
+  let warm=0;
+  if(state==='dawn') warm=dawnFlash;
+  else if(curPhase===3) warm=Math.min(0.5,(t-150)/30*0.5);
+  if(warm<=0) return;
+  const g=ctx.createLinearGradient(0,0,0,VH);
+  g.addColorStop(0,'rgba(242,185,140,'+(warm*0.4)+')');
+  g.addColorStop(1,'rgba(255,217,138,'+(warm*0.15)+')');
+  ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
+}
+
+// ---------- frame / HUD ----------
+function drawFrame(){
+  // parchment torn border around play area (drawn after unclip, in play-space)
+  ctx.setTransform(dpr*scale,0,0,dpr*scale,offX*dpr,offY*dpr);
+  ctx.save();
+  ctx.globalAlpha=0.9; ink(6,P.paper2);
+  wobbLine(6,6,VW-6,6,3,1); wobbLine(VW-6,6,VW-6,VH-6,3,2);
+  wobbLine(VW-6,VH-6,6,VH-6,3,3); wobbLine(6,VH-6,6,6,3,4);
+  ctx.globalAlpha=1; ink(3.2,P.ink);
+  wobbLine(10,10,VW-10,10,2.5,11); wobbLine(VW-10,10,VW-10,VH-10,2.5,12);
+  wobbLine(VW-10,VH-10,10,VH-10,2.5,13); wobbLine(10,VH-10,10,10,2.5,14);
+  ctx.restore();
+}
+
+function drawHUD(){
+  // top: score banner (torn paper)
+  ctx.save();
+  paperTab(VW/2-118,14,236,52,3);
+  const pop=1+scorePop*0.35;
+  ctx.save(); ctx.translate(VW/2,40); ctx.scale(pop,pop);
+  drawText('SHIPS HOME  '+savedScore, 0,0, 30, P.ink,'center',scorePop>0.05);
+  ctx.restore();
+  // cargo note
+  drawText('(cargo ×3  •  '+cargoCount+' hauled)', VW/2, 60, 15, '#5a4a30','center',false);
+  ctx.restore();
+
+  // HOPE lamp top-left
+  drawHopeLamp(48,110);
+  // OIL can (gauge) top-right
+  drawOilCan(VW-58,104);
+
+  // phase indicator + timer bottom-center small
+  const mins=Math.max(0,DAWN-t);
+  ctx.save();
+  drawText((PHASES[curPhase]?PHASES[curPhase].name:''), VW/2, VH-30, 18, P.paper,'center',false);
+  // dawn progress bar
+  const bw=200, bx=VW/2-bw/2, by=VH-18;
+  ink(2.5,P.paper2); wobbLine(bx,by,bx+bw,by,1.5,90);
+  ink(4,dawnGlow>0.83?P.peach:P.beamEdge); wobbLine(bx,by,bx+bw*Math.min(1,t/DAWN),by,1.5,91);
+  ctx.fillStyle=P.paper; ctx.beginPath(); ctx.arc(bx+bw,by,5,0,6.28); ctx.fill();
+  ctx.restore();
+
+  // challenge target
+  if(challenge>0){
+    ctx.save();
+    paperTab(VW/2-80,74,160,26,2);
+    const beat=challengeBeaten;
+    drawText('TARGET: '+challenge+' ships'+(beat?'  ✓':''), VW/2,88,15, beat?P.harbor:P.red,'center',beat);
+    ctx.restore();
+  }
+
+  // FLARE button (touch) bottom-right
+  drawFlareButton();
+
+  // hint line (self-dismissing)
+  if(hintTimer>0 && state==='playing'){
+    ctx.save(); ctx.globalAlpha=Math.min(1,hintTimer/1.5);
+    const msg = hasTouched? 'DRAG the sea to aim the beam  •  hold the can to FLARE'
+                          : 'MOVE mouse / ←→ to aim  •  hold SPACE or CLICK to FLARE';
+    paperTab(VW/2-222,VH-96,444,32,2);
+    drawText(msg, VW/2, VH-80, 17, P.ink,'center',false);
+    drawText('lit ships steer home  •  dark ships drift onto the rocks', VW/2, VH-58, 15, P.beamEdge,'center',false);
+    ctx.restore();
+  }
+}
+
+function paperTab(x,y,w,h,seed){
+  ctx.save();
+  ctx.fillStyle=P.paper;
+  wobbCircBox(x,y,w,h,seed);
+  ctx.fill();
+  ctx.globalAlpha=0.5; ink(2,P.paper2); wobbCircBox(x,y,w,h,seed); ctx.stroke();
+  ctx.globalAlpha=1; ink(2.4,P.ink); wobbCircBox(x,y,w,h,seed+1); ctx.stroke();
+  ctx.restore();
+}
+function wobbCircBox(x,y,w,h,seed){
+  ctx.beginPath();
+  const pts=[[x,y],[x+w,y],[x+w,y+h],[x,y+h]];
+  ctx.moveTo(x+jitS(seed)*2,y+jitS(seed+1)*2);
+  ctx.lineTo(x+w+jitS(seed+2)*2,y+jitS(seed+3)*2);
+  ctx.lineTo(x+w+jitS(seed+4)*2,y+h+jitS(seed+5)*2);
+  ctx.lineTo(x+jitS(seed+6)*2,y+h+jitS(seed+7)*2);
+  ctx.closePath();
+}
+
+function drawHopeLamp(x,y){
+  const f=hope/HOPEMAX;
+  ctx.save();
+  paperTab(x-32,y-42,84,96,7);
+  // lamp base
+  ctx.fillStyle=P.ink; ctx.beginPath();
+  ctx.moveTo(x-14,y+30); ctx.lineTo(x+24,y+30); ctx.lineTo(x+18,y+14); ctx.lineTo(x-8,y+14); ctx.closePath(); ctx.fill();
+  // glass
+  ink(2.6,P.ink); wobbCircPath(x+5,y,17,2,31); ctx.stroke();
+  // flame glow scaled by hope
+  const glow=ctx.createRadialGradient(x+5,y+2,1,x+5,y+2,16*(0.4+f*0.6));
+  const pulse=1+hopePulse*0.3;
+  glow.addColorStop(0,'rgba(255,244,214,'+(0.5+f*0.5)+')');
+  glow.addColorStop(1,'rgba(224,122,75,0)');
+  ctx.fillStyle=glow; ctx.beginPath(); ctx.arc(x+5,y+2,16*pulse,0,6.28); ctx.fill();
+  if(f>0.05){
+    ctx.fillStyle= f>0.35? P.gold : P.warn;
+    ctx.beginPath(); ctx.moveTo(x+5,y+8-f*9); ctx.quadraticCurveTo(x+9,y+2,x+5,y+8); ctx.quadraticCurveTo(x+1,y+2,x+5,y+8-f*9); ctx.fill();
+  }
+  drawText('HOPE', x+5, y-30, 14, P.ink,'center',false);
+  ctx.restore();
+}
+
+function drawOilCan(x,y){
+  const f=oil/OILMAX;
+  ctx.save();
+  paperTab(x-30,y-38,84,90,17);
+  // can body
+  const bx=x-16,by=y-14,bw=44,bh=42;
+  ctx.fillStyle=P.paper2; ctx.fillRect(bx,by,bw,bh);
+  // fill level (oil)
+  ctx.fillStyle=P.gold; ctx.fillRect(bx,by+bh-bh*f,bw,bh*f);
+  if(f<0.2){ ctx.fillStyle=Math.sin(t*12)>0?P.urgent:P.warn; ctx.fillRect(bx,by+bh-bh*f,bw,Math.max(3,bh*f)); }
+  ink(2.6,P.ink); ctx.strokeRect(bx,by,bw,bh);
+  // spout
+  ink(2.6,P.ink); wobbLine(bx+bw,by+6,bx+bw+12,by-4,1,41);
+  // handle
+  ctx.beginPath(); ctx.arc(bx+bw/2,by-2,8,Math.PI,0); ctx.stroke();
+  drawText('OIL', x+6, y-26, 14, P.ink,'center',false);
+  ctx.restore();
+}
+
+let flareBtnRect={x:0,y:0,r:0};
+function drawFlareButton(){
+  const r=46;
+  const x=VW-r-24, y=VH-r-24;
+  flareBtnRect={x,y,r};
+  const on=flareLevel>0.05;
+  ctx.save();
+  // glow when active
+  if(on){ const g=ctx.createRadialGradient(x,y,4,x,y,r+18); g.addColorStop(0,'rgba(255,232,180,0.7)'); g.addColorStop(1,'rgba(255,217,138,0)'); ctx.fillStyle=g; ctx.beginPath(); ctx.arc(x,y,r+18,0,6.28); ctx.fill(); }
+  ctx.fillStyle=on?P.gold:P.paper;
+  wobbCircPath(x,y,r,3,63); ctx.fill();
+  ink(3.2,P.ink); wobbCircPath(x,y,r,3,63); ctx.stroke();
+  // oil-can glyph
+  ctx.fillStyle=P.ink;
+  ctx.fillRect(x-14,y-6,24,18); ink(2.4,P.ink); ctx.strokeRect(x-14,y-6,24,18);
+  wobbLine(x+10,y-2,x+20,y-10,1,64);
+  drawText('FLARE', x, y+r-6, 15, P.ink,'center',false);
+  ctx.restore();
+}
+
+// ---------- splash / score card ----------
+let splashPulse=0;
+function drawSplash(){
+  splashPulse+=0.03;
+  ctx.save();
+  ctx.fillStyle='rgba(20,32,43,0.55)'; ctx.fillRect(0,0,VW,VH);
+  paperTab(VW/2-230,180,460,300,101);
+  drawText("PIP'S", VW/2, 250, 66, P.red,'center');
+  drawText("LONGEST NIGHT", VW/2, 316, 58, P.ink,'center');
+  drawText("aim the one beam — lit ships steer home,", VW/2, 372, 20, '#3a3226','center',false);
+  drawText("dark ships drift onto the rocks. Last till dawn.", VW/2, 398, 20, '#3a3226','center',false);
+  const a=0.55+0.45*Math.sin(splashPulse*3);
+  ctx.globalAlpha=a;
+  drawText("tap or press any key to light the lamp", VW/2, 448, 24, P.red,'center',false);
+  ctx.globalAlpha=1;
+  // tiny lighthouse doodle
+  ctx.restore();
+}
+
+function drawScoreCard(win){
+  ctx.save();
+  ctx.fillStyle='rgba(20,32,43,'+(win?0.15:0.5)+')'; ctx.fillRect(0,0,VW,VH);
+  const cardY=170;
+  ctx.save();
+  ctx.translate(VW/2, cardY+140);
+  ctx.rotate(-0.02);
+  paperTab(-235,-140,470,300,201);
+  if(win){
+    drawText("DAWN!", 0,-88, 60, P.peach,'center');
+    drawText("you kept the light till morning", 0,-46, 20, '#3a3226','center',false);
+  } else {
+    drawText("HOPE GUTTERED OUT", 0,-88, 40, P.red,'center');
+    drawText("Pip set down the crank... this time.", 0,-46, 19, '#3a3226','center',false);
+  }
+  drawText("SHIPS GUIDED HOME", 0, 0, 22, P.ink,'center',false);
+  drawText(""+savedScore, 0, 44, 62, P.ink,'center');
+  drawText("best "+best+"   •   "+cargoCount+" cargo", 0, 92, 20, '#5a4a30','center',false);
+  const a=0.55+0.45*Math.sin(performance.now()*0.004);
+  ctx.globalAlpha=a;
+  drawText("tap / Enter / Space to sail again", 0, 132, 22, P.red,'center',false);
+  ctx.globalAlpha=1;
+  ctx.restore();
+  ctx.restore();
+}
+
+// ---------- input ----------
+function toV(e){
+  return { x:(e.clientX-offX)/scale, y:(e.clientY-offY)/scale };
+}
+function inFlareBtn(p){ return Math.hypot(p.x-flareBtnRect.x,p.y-flareBtnRect.y)<flareBtnRect.r+8; }
+
+function aimAt(p){
+  aimMode='pointer';
+  beamAng=Math.atan2(p.y-CY,p.x-CX);
+}
+
+function startOrRetry(){
+  initAudio();
+  if(state==='splash'||state==='over'||state==='dawn'){ initRun(); return true; }
+  return false;
+}
+
+canvas.addEventListener('pointerdown',function(e){
+  e.preventDefault();
+  try{window.focus();}catch(_){}
+  initAudio();
+  const p=toV(e);
+  pointer.type=e.pointerType||'mouse';
+  if(e.pointerType==='touch') hasTouched=true;
+  if(state!=='playing'){ startOrRetry(); return; }
+  interacted=true;
+  if(e.pointerType==='touch'){
+    if(inFlareBtn(p)){ flareBtn=true; }
+    else { aimAt(p); }
+  } else {
+    if(inFlareBtn(p)){ flareBtn=true; }
+    else { flareMouse=true; aimAt(p); }
+  }
+},{passive:false});
+
+canvas.addEventListener('pointermove',function(e){
+  const p=toV(e);
+  if(state!=='playing') return;
+  if(e.pointerType==='touch'){
+    if(flareBtn) return; // holding flare button
+    if(pointer.down!==false){ aimAt(p); }
+    aimAt(p);
+  } else {
+    aimAt(p);
+    interacted=true;
+  }
+  if(interacted && hintTimer>3) hintTimer=3;
+},{passive:false});
+
+function releasePointer(e){
+  flareMouse=false; flareBtn=false;
+}
+canvas.addEventListener('pointerup',releasePointer);
+canvas.addEventListener('pointercancel',releasePointer);
+canvas.addEventListener('pointerleave',function(e){ if(e.pointerType==='mouse'){flareMouse=false;} });
+
+window.addEventListener('keydown',function(e){
+  const k=e.key;
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','Spacebar','a','A','d','D','Enter'].includes(k)){ e.preventDefault(); }
+  initAudio();
+  if(state!=='playing'){ startOrRetry(); return; }
+  interacted=true; if(hintTimer>3)hintTimer=3;
+  if(k==='ArrowLeft'||k==='a'||k==='A'){ aimMode='key'; keyAim=-1; }
+  else if(k==='ArrowRight'||k==='d'||k==='D'){ aimMode='key'; keyAim=1; }
+  else if(k===' '||k==='Spacebar'){ flareKey=true; }
+},{passive:false});
+
+window.addEventListener('keyup',function(e){
+  const k=e.key;
+  if(k==='ArrowLeft'||k==='a'||k==='A'){ if(keyAim<0)keyAim=0; }
+  else if(k==='ArrowRight'||k==='d'||k==='D'){ if(keyAim>0)keyAim=0; }
+  else if(k===' '||k==='Spacebar'){ flareKey=false; }
+});
+
+window.addEventListener('message',function(e){
+  if(e.data && e.data.gs==='reset'){ state='splash'; }
+});
+
+// ---------- loop ----------
+function loop(now){
+  let dt=(now-lastT)/1000; lastT=now;
+  if(dt>0.05)dt=0.05; if(dt<0)dt=0;
+  if(state==='playing') hintTimer=Math.max(0,hintTimer-dt);
+  update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+// ready
+try{parent.postMessage({gs:'ready'},'*');}catch(e){}
+requestAnimationFrame(function(n){ lastT=n; loop(n); });
+
+})();
+</script>
+</body>
+</html>

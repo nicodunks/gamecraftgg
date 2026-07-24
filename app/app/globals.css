@@ -239,9 +239,30 @@ h1, h2, h3 { line-height: 1.1; margin: 0; }
 .nav-rail .rail-label { font-size: 11px; color: var(--graphite); margin-top: -8px; }
 .nav-rail .rail-disabled { opacity: 0.3; pointer-events: none; }
 
-/* portrait games get a phone-shaped stage (dormant until a portrait game ships) */
-.stage-portrait { max-width: min(430px, 100%); margin-inline: auto; }
-.stage-portrait .game-stage { aspect-ratio: 9 / 16; }
+/* Portrait games: a phone-shaped stage that must fit ENTIRELY on screen.
+   Constrained by BOTH available width and viewport height minus the page
+   chrome above the stage (back link + title + margins ≈ 170px) — a 9:16
+   stage capped only by width is 764px tall and forces page scroll on any
+   laptop. Width is derived from the height budget via the aspect ratio. */
+.stage-portrait {
+  /* Fit BOTH the column width and the viewport height. --chrome is the page
+     furniture above/below the stage (header + title row + action bar + margins);
+     the height budget is 100dvh minus that, and the 9:16 width is DERIVED from
+     it so a tall game can never force page scroll on a laptop. */
+  --chrome: 210px;
+  --stage-h: clamp(300px, calc(100dvh - var(--chrome)), 760px);
+  max-width: min(430px, 100%, calc(var(--stage-h) * 9 / 16));
+  margin-inline: auto;
+}
+.stage-portrait .game-stage {
+  aspect-ratio: 9 / 16;
+  max-height: var(--stage-h);
+  margin-inline: auto;
+}
+@media (max-width: 760px) {
+  /* phones: use available width, far less fixed chrome */
+  .stage-portrait { --chrome: 140px; max-width: min(430px, 100%); }
+}
 
 /* mobile viewing aids: a rotate nudge above the stage + a fullscreen button */
 .rotate-hint {
