@@ -52,6 +52,31 @@ export const auth = betterAuth({
     // (PLAN.md "free credits are inventory").
     requireEmailVerification: false,
   },
+  // Google sign-in: free, Google-verified emails (farming needs real Google
+  // accounts), and no CSP loosening — it's a pure redirect flow. Configured
+  // only when the secrets exist, so dev/prod without them still boots and the
+  // login page hides the button (it asks /api/auth-config at runtime).
+  ...(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET
+    ? {
+        socialProviders: {
+          google: {
+            clientId: process.env.GOOGLE_CLIENT_ID,
+            clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+            // multi-account users should get the chooser, not a silent default
+            prompt: 'select_account' as const,
+          },
+        },
+      }
+    : {}),
+  account: {
+    accountLinking: {
+      enabled: true,
+      // Same inbox, one account: a password user who later clicks Google gets
+      // linked, not duplicated (no second signup grant). Google is safe to
+      // trust for this because it only asserts verified emails.
+      trustedProviders: ['google'],
+    },
+  },
   databaseHooks: {
     user: {
       create: {
