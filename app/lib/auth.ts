@@ -75,6 +75,14 @@ export const auth = betterAuth({
       // linked, not duplicated (no second signup grant). Google is safe to
       // trust for this because it only asserts verified emails.
       trustedProviders: ['google'],
+      // We ship NO email-verification flow, so every credential account is
+      // emailVerified=0 forever. Better Auth's default (true) therefore
+      // refuses to link Google to ANY existing password account — that is
+      // literally the `account_not_linked` error every early user would hit.
+      // Google's assertion is the strongest verification we have; requiring a
+      // local verification we never perform would gate linking on something
+      // that can never become true.
+      requireLocalEmailVerified: false,
     },
   },
   databaseHooks: {

@@ -31,7 +31,27 @@ const csp = [
   "form-action 'self'",
 ].join('; ');
 
+const APP_HOST = (process.env.NEXT_PUBLIC_APP_ORIGIN || '').replace(/^https?:\/\//, '').replace(/\/$/, '');
+
 const nextConfig: NextConfig = {
+  // Canonical host. www served the app directly, but Better Auth always builds
+  // its OAuth redirect_uri from the canonical APP_ORIGIN (the apex) — so a
+  // sign-in STARTED on www set its state cookie on www, came back to the apex,
+  // and died with a state mismatch. Auth cookies are host-only by design, so
+  // one canonical host is the fix; it also keeps sessions and SEO on one origin.
+  // Only rewrites the www variant of our own app host — play.<domain> and
+  // fly.dev are untouched.
+  async redirects() {
+    if (!APP_HOST || APP_HOST.startsWith('localhost')) return [];
+    return [
+      {
+        source: '/:path*',
+        has: [{ type: 'host', value: `www.${APP_HOST}` }],
+        destination: `https://${APP_HOST}/:path*`,
+        permanent: true,
+      },
+    ];
+  },
   async headers() {
     return [
       {
