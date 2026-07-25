@@ -2,7 +2,7 @@
 //   Local/CLI mode:  node pipeline/run.mjs --prompt "a game about ..." [--id <id>] [--ref <ref>] [--edit <slug>]
 //   Fleet mode:      node pipeline/run.mjs --job <generationId>   (GC_REPORT_URL + GC_JOB_TOKEN in env)
 // Requires the `claude` CLI (Claude Code) on PATH. Agents in the loop:
-//   designer -> builder -> [play-tester harness + judge] x cycles -> publish
+//   creator (designs + builds + playtests its own work) -> [smoke gate + judge] x cycles -> publish
 // ALL side effects (trace, status, publish, refund) go through the Reporter —
 // this file never touches the DB or the ledger directly. See reporter.mjs.
 import { execFileSync, spawn } from 'node:child_process';
@@ -95,26 +95,44 @@ function short(s, n = 150) {
 // Cost per game is dominated by model choice, so pin it per role rather than
 // inheriting whatever the CLI defaults to (that default is not stable, which
 // makes spend unpredictable in production). Override per role via env.
+// Two roles since the 2026-07 merge: CREATOR (designs AND builds — one head,
+// no lossy brief handoff) and JUDGE (separate context on purpose: the maker
+// never grades its own work). Both on Opus 5 (founder call, 2026-07-24).
 const MODELS = {
-  designer: process.env.GS_MODEL_DESIGNER || 'claude-opus-4-8',
-  builder: process.env.GS_MODEL_BUILDER || 'claude-opus-4-8',
-  judge: process.env.GS_MODEL_JUDGE || 'claude-opus-4-8',
+  creator: process.env.GS_MODEL_CREATOR || 'claude-opus-5',
+  judge: process.env.GS_MODEL_JUDGE || 'claude-opus-5',
 };
-// Reasoning effort per role (founder-set 2026-07-23): the builder writes the
-// game — full effort; designer briefs and judge scoring hold quality at medium
-// with meaningfully less latency. Override per role via env.
+// Reasoning effort per role: the creator writes the game — full effort; judge
+// scoring holds quality at medium with meaningfully less latency (founder-set).
 const EFFORT = {
-  designer: process.env.GS_EFFORT_DESIGNER || 'medium',
-  builder: process.env.GS_EFFORT_BUILDER || 'high',
+  creator: process.env.GS_EFFORT_CREATOR || 'high',
   judge: process.env.GS_EFFORT_JUDGE || 'medium',
 };
 
-function claude(rolePrompt, { tools, timeoutMin = 15, cwd = APP, phase = 'agent' } = {}) {
+function claude(rolePrompt, { tools, timeoutMin = 15, cwd = APP, phase = 'agent', playtestSlug } = {}) {
   return new Promise((resolve, reject) => {
     const cliArgs = ['-p', rolePrompt, '--output-format', 'stream-json', '--verbose'];
     if (MODELS[phase]) cliArgs.push('--model', MODELS[phase]);
     if (EFFORT[phase]) cliArgs.push('--effort', EFFORT[phase]);
-    if (tools) cliArgs.push('--allowedTools', tools, '--permission-mode', 'acceptEdits');
+    if (tools) {
+      cliArgs.push('--allowedTools', tools, '--permission-mode', 'acceptEdits');
+      // The prompt is untrusted creator input. A shell would let a hostile
+      // prompt read the host env/DB; the web would let it exfiltrate. Deny
+      // EXPLICITLY — ambient user/project settings must never widen a
+      // pipeline agent's toolbox (observed leaking on a dev box).
+      cliArgs.push('--disallowedTools', 'Bash,BashOutput,KillShell,WebFetch,WebSearch,Task,Agent,NotebookEdit,TodoWrite');
+    }
+    if (playtestSlug) {
+      // the dynamic playtest tool: a per-game MCP server the agent drives with
+      // inputs IT chooses (every game's controls differ). --strict-mcp-config
+      // so the agent gets exactly this server and nothing ambient.
+      const cfg = JSON.stringify({
+        mcpServers: {
+          playtest: { command: 'node', args: [path.join(APP, 'scripts', 'playtest-mcp.mjs'), '--slug', playtestSlug, '--app', APP] },
+        },
+      });
+      cliArgs.push('--mcp-config', cfg, '--strict-mcp-config');
+    }
     const child = spawn('claude', cliArgs, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
 
     let fullText = '';
@@ -203,141 +221,164 @@ try {
   rubric = fs.readFileSync(path.join(APP, 'pipeline', 'docs', '03-quality-rubric.md'), 'utf8');
   designGuidance = fs.readFileSync(path.join(APP, 'pipeline', 'docs', '02-generation-pipeline.md'), 'utf8');
 
-  let brief, meta, gameDir;
+  let brief = '';
+  let meta, gameDir;
   let editSnapshot = null; // for edit mode: restore the game if the edit fails to pass
   const isEdit = !!editSlug && !!job.editFiles?.['index.html'];
   if (editSlug && !isEdit) throw new Error(`edit requested but ${editSlug} has no game files`);
 
+  // The creator prompt injects ONLY the design half of the pipeline doc (the
+  // two design laws, fun-drive dials, depth levers). The build contract is
+  // CONVENTIONS.md; the rest of the doc is factory plumbing the artisan
+  // doesn't need in context.
+  const stage1Start = designGuidance.indexOf('## Stage 1');
+  const stage1End = designGuidance.indexOf('## Stage 2');
+  const designLaws = stage1Start >= 0 && stage1End > stage1Start ? designGuidance.slice(stage1Start, stage1End) : designGuidance;
+
+  // New games are built in a wip dir so the creator never blocks on naming —
+  // meta.json names the game, and the final slug is claimed at publish time.
+  let dirSlug; // the folder name the playtest tool serves during the build
   if (isEdit) {
-    // ---------- 1b. designer (EDIT MODE) — amend an existing game in place ----------
     // The job carries the current game files (locally read from disk; in fleet
     // mode fetched from the app) — write them into the working dir, and keep
     // the originals as the snapshot so a failed edit reverts cleanly.
     gameDir = path.join(GAMES_DIR, editSlug);
+    dirSlug = editSlug;
     fs.mkdirSync(gameDir, { recursive: true });
     for (const [f, buf] of Object.entries(job.editFiles)) {
       if (buf) fs.writeFileSync(path.join(gameDir, f), buf);
     }
     meta = JSON.parse(fs.readFileSync(path.join(gameDir, 'meta.json'), 'utf8')); // keep slug/title/boards
-    trace('designer', `Editing "${meta.title}" per your prompt…`);
     editSnapshot = {
       'index.html': job.editFiles['index.html'],
       'cover.svg': job.editFiles['cover.svg'] ?? null,
       'DESIGN_BRIEF.md': job.editFiles['DESIGN_BRIEF.md'] ?? null,
     };
-    const prevBrief = job.editFiles['DESIGN_BRIEF.md']?.toString('utf8') ?? '(no prior brief on disk)';
-    const designerOut = await claude(
-      `You are the GameSight DESIGNER agent editing an EXISTING game. Apply the creator's change to the current design — keep everything that works, change only what the prompt asks. Output the FULL updated DESIGN_BRIEF (not a diff).
-
-Guidance:
-${designGuidance}
-
-CURRENT DESIGN_BRIEF:
-${prevBrief}
-
-Creator's change request: "${prompt}"
-
-Output the complete updated brief inside a \`\`\`markdown fence. Nothing else.`,
-      { phase: 'designer' }
-    );
-    brief = extractBlock(designerOut, 'markdown') ?? designerOut;
-    fs.writeFileSync(path.join(gameDir, 'DESIGN_BRIEF.md'), brief);
-    setGen({ slug: editSlug, brief });
-    trace('designer', `Edit brief ready for ${editSlug}`);
+    setGen({ slug: editSlug });
   } else {
-    // ---------- 1. designer (NEW GAME) ----------
-    trace('designer', 'Designing the game…');
-    const designerOut = await claude(
-      `You are the GameSight DESIGNER agent — heavy planning, high taste, before any code.
+    dirSlug = `wip-${genId.slice(0, 8)}`;
+    gameDir = path.join(GAMES_DIR, dirSlug);
+    fs.mkdirSync(gameDir, { recursive: true });
+  }
 
-Guidance (follow the "Stage 1 — Designer agent" section exactly, including the fun-drive dials and the wide creative space):
-${designGuidance}
+  // meta.json comes off DISK now (the creator writes it like every other
+  // file) — normalize instead of trusting, and never kill a paid run over a
+  // bad name: sanitize the slug or fall back to a generated one.
+  function readMeta() {
+    let m = {};
+    try {
+      m = JSON.parse(fs.readFileSync(path.join(gameDir, 'meta.json'), 'utf8'));
+    } catch {
+      m = {};
+    }
+    let slug = String(m.slug ?? '')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40);
+    if (!/^[a-z0-9-]{3,40}$/.test(slug)) slug = `game-${genId.slice(0, 6)}`;
+    m.slug = slug;
+    m.title = m.title ?? slug;
+    if (!Array.isArray(m.dials) || m.dials.length === 0) m.dials = ['mastery'];
+    return m;
+  }
+
+  // ---------- creator + smoke-test + judge loop ----------
+  const CREATOR_TOOLS = 'Read,Write,Edit,mcp__playtest__playtest';
+  const newGamePrompt = `You are the GameCraft CREATOR — one agent who DESIGNS and BUILDS a small, instantly-fun browser game. There is no separate designer or builder: you own the taste and the code, and you playtest your own work as you go.
+
+DESIGN GUIDANCE (this is what makes games good — the two design laws are non-negotiable):
+${designLaws}
+
+CONVENTIONS (binding contract — the judge enforces these):
+${conventions}
 
 Creator's prompt: "${prompt}"
 
-Produce:
-1. A complete DESIGN_BRIEF (markdown) covering every bullet in Stage 1: fun-drive dials, core verb (≤5 words), the twist, failure model, structure/escalation, toy check if physics, mode (sp only for now), art direction (specific hexes, shape language), sound & juice plan, controls (desktop + touch), rendering route (canvas2d preferred; phaser only if physics-heavy).
-2. A meta.json object per the conventions (slug: kebab-case, unique-feeling, not colliding with common words).
+Work in this order, writing every file DIRECTLY TO DISK in your working directory (it IS the game folder):
+1. DESIGN_BRIEF.md — think here first, before any code. Fun-drive dials, core verb (≤5 words), the twist, failure model, structure/escalation, toy check if physics, art direction (specific hexes, shape language), sound & juice plan, controls (desktop AND touch), rendering route (canvas2d preferred; phaser only if physics-heavy). Be opinionated and specific — this brief is the promise the judge scores you against.
+2. meta.json — per the conventions schema (slug: kebab-case, unique-feeling, not a common word).
+3. index.html — the complete game. A game is 40-70KB and does not fit in a chat message — use Write, and Edit for fixes.
+4. cover.svg — 640x400, in the game's own art language.
+5. PLAYTEST IT with the playtest tool — at least one desktop run and one mobile run, driving the controls YOUR game actually uses (the tool takes your own action list; there is no generic script). Then LOOK at the screenshots with Read. If the core verb isn't visibly working and fun in them, fix it and test again. If your game has simulated motion, use a long observe window to demonstrate a run actually TERMINATES and the goal is reachable — physics is a thing you prove, not hope.
 
-Output format: the brief inside a \`\`\`markdown fence, then the meta inside a \`\`\`json fence. Nothing else.`,
-      { phase: 'designer' }
-    );
-    brief = extractBlock(designerOut, 'markdown') ?? designerOut;
-    meta = extractJson(designerOut);
-    if (!meta.slug || !/^[a-z0-9-]{3,40}$/.test(meta.slug)) throw new Error('designer produced invalid slug');
-    if (!Array.isArray(meta.dials) || meta.dials.length === 0) meta.dials = ['mastery'];
-    meta.title = meta.title ?? meta.slug;
-    // Atomically claim the game dir: mkdir (non-recursive) fails with EEXIST if a
-    // concurrent run already took the slug, so we never clobber another game.
-    // (In fleet mode each worker has its own fs — the app re-resolves slug
-    // collisions authoritatively at publish time.)
-    gameDir = path.join(GAMES_DIR, meta.slug);
-    try {
-      fs.mkdirSync(gameDir);
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      meta.slug = `${meta.slug}-${genId.slice(0, 4)}`;
-      gameDir = path.join(GAMES_DIR, meta.slug);
-      fs.mkdirSync(gameDir, { recursive: true });
-    }
-    fs.writeFileSync(path.join(gameDir, 'DESIGN_BRIEF.md'), brief);
-    setGen({ slug: meta.slug, brief });
-    trace('designer', `Brief ready: "${meta.title}" (${meta.slug}) — dials: ${JSON.stringify(meta.dials)}`);
-  }
+You have at most 6 playtest calls — spend them like a founder, not a perfectionist. Ship when a friend would say "one more try", not when it is perfect.
+When the files are on disk and your last playtest looks right, reply with only: DONE`;
 
-  // ---------- 2/3/4. build + verify + judge loop ----------
+  const editPrompt = `You are the GameCraft CREATOR editing an EXISTING game. Apply the creator's change — keep everything that works, change only what the prompt asks (plus anything your change breaks).
+
+DESIGN GUIDANCE (the two design laws still apply to the changed game):
+${designLaws}
+
+CONVENTIONS (binding contract):
+${conventions}
+
+Change request: "${prompt}"
+
+Your working directory IS the game folder: read ./DESIGN_BRIEF.md and ./index.html first. Then:
+1. Update DESIGN_BRIEF.md so it stays the truthful promise of the changed game (full brief, not a diff).
+2. Edit index.html in place — do NOT rewrite the whole file.
+3. Update cover.svg only if the look changed.
+4. PLAYTEST with the playtest tool (desktop + mobile, the game's real controls) and LOOK at the screenshots — prove the change works and nothing regressed.
+
+When done and your last playtest looks right, reply with only: DONE`;
+
   let critique = '';
   let published = false;
   for (let cycle = 1; cycle <= MAX_CYCLES; cycle++) {
     _cycles = cycle;
     setGen({ cycles: cycle });
-    trace('builder', cycle === 1 ? 'Writing the game…' : `Fixing per critique (cycle ${cycle})…`);
-    const runBuilder = () => claude(
-      `You are the GameSight BUILDER agent. Implement the design brief EXACTLY as one self-contained index.html per the conventions. Pure Canvas2D + WebAudio unless the brief demands Phaser (then use <script src="/vendor/phaser.min.js">).
-
-CONVENTIONS (binding contract):
-${conventions}
-
-DESIGN BRIEF:
-${brief}
-
-${cycle > 1 ? `PREVIOUS ATTEMPT FAILED VERIFICATION. index.html already exists in your working directory. Judge critique to fix (fix ALL of it, change nothing that already works). Use Edit to patch it — do NOT rewrite the whole file:\n${critique}\n` : ''}
-Write your work DIRECTLY TO DISK in your working directory (it is the game folder):
-- \`index.html\` — the complete game (use the Write tool; never paste the file into a message)
-- \`cover.svg\` — a 640x400 SVG cover in the game's own art language
-
-A game is 40-70KB, which does not fit in a chat message — that is why you must use Write/Edit.
-When both files are on disk, reply with only: DONE`,
-      // The builder needs real write access: emitting a 70KB file through one
-      // message hits the output limit, and on fix cycles Edit patches in place
-      // instead of re-emitting everything (much cheaper). cwd IS the game dir.
-      // NO Bash: the prompt is untrusted creator input, and a shell would let a
-      // hostile prompt read the host env/DB. Read/Write/Edit covers the job.
-      { tools: 'Read,Write,Edit', cwd: gameDir, timeoutMin: 40, phase: 'builder' }
+    trace(
+      'creator',
+      cycle === 1 ? (isEdit ? `Editing "${meta.title}" per your prompt…` : 'Dreaming it up, then building it…') : `Fixing per critique (cycle ${cycle})…`
     );
-    // One retry on a mid-stream API failure: the builder is the longest, most
+    const cyclePrompt =
+      cycle === 1
+        ? isEdit
+          ? editPrompt
+          : newGamePrompt
+        : `${isEdit ? editPrompt : newGamePrompt}
+
+PREVIOUS ATTEMPT FAILED VERIFICATION. Your files already exist in the working directory — use Edit to fix them, do NOT rewrite from scratch, and change nothing that already works. Fix ALL of this judge critique, then RE-PLAYTEST to prove the fixes:
+${critique}`;
+    const runCreator = () =>
+      claude(cyclePrompt, {
+        tools: CREATOR_TOOLS,
+        cwd: gameDir,
+        timeoutMin: 45,
+        phase: 'creator',
+        playtestSlug: dirSlug,
+      });
+    // One retry on a mid-stream API failure: the creator is the longest, most
     // expensive call in the run, and a transient CLI/API drop should not burn a
-    // whole judge cycle (which now costs the creator a credit refund round-trip).
-    let builderOut;
+    // whole cycle (which costs the creator a credit refund round-trip).
     try {
-      builderOut = await runBuilder();
+      await runCreator();
     } catch (e) {
-      trace('builder', `builder run failed (${short(e.message, 120)}) — retrying once`, 'tool');
-      builderOut = await runBuilder();
+      trace('creator', `creator run failed (${short(e.message, 120)}) — retrying once`, 'tool');
+      await runCreator();
     }
-    // Disk is the contract now, not the transcript.
+    // Disk is the contract, not the transcript.
     const htmlPath = path.join(gameDir, 'index.html');
     if (!fs.existsSync(htmlPath) || fs.statSync(htmlPath).size < 500) {
-      throw new Error(`builder produced no index.html (said: ${short(builderOut, 200)})`);
+      throw new Error('creator produced no index.html');
     }
+    if (!isEdit) meta = readMeta();
     fs.writeFileSync(path.join(gameDir, 'meta.json'), JSON.stringify(meta, null, 2));
-    trace('builder', `index.html written (${(fs.statSync(htmlPath).size / 1024).toFixed(0)} KB)`);
+    try {
+      brief = fs.readFileSync(path.join(gameDir, 'DESIGN_BRIEF.md'), 'utf8');
+    } catch {
+      brief = '(the creator wrote no brief)';
+    }
+    setGen({ brief });
+    trace('creator', `Brief ready: "${meta.title}" — dials: ${JSON.stringify(meta.dials ?? [])}`);
+    trace('creator', `index.html written (${(fs.statSync(htmlPath).size / 1024).toFixed(0)} KB)`);
 
-    // play-tester harness. Port 0 = OS-assigned, so concurrent builds can never
+    // deterministic smoke gate. Port 0 = OS-assigned, so concurrent builds can never
     // collide on a port (a bind failure here would burn a whole cycle); we parse
     // the actual port from the server's startup line, which doubles as the
     // readiness signal (replaces the old fixed sleep).
-    trace('playtest', 'Play-testing on desktop + mobile…');
+    trace('playtest', 'Smoke-testing on desktop + mobile…');
     const server = spawn('node', ['scripts/game-server.mjs', '0'], { cwd: APP, stdio: ['ignore', 'pipe', 'ignore'] });
     let verifyOut = '';
     let verifyFailed = false;
@@ -353,7 +394,7 @@ When both files are on disk, reply with only: DONE`,
         server.on('exit', () => { clearTimeout(to); reject(new Error('game server exited before listening')); });
       });
       try {
-        verifyOut = execFileSync('node', ['scripts/verify-game.mjs', meta.slug, String(port)], {
+        verifyOut = execFileSync('node', ['scripts/verify-game.mjs', dirSlug, String(port)], {
           cwd: APP,
           encoding: 'utf8',
           timeout: 120_000,
@@ -367,10 +408,12 @@ When both files are on disk, reply with only: DONE`,
     }
     trace('playtest', verifyOut.split('\n').filter(Boolean).slice(-8).join(' | '));
 
-    // judge panel
-    trace('judge', 'Judges scoring against the rubric…');
-    const judgeOut = await claude(
-      `You are the GameSight JUDGE PANEL (feel, taste, fun-drive, integration, content judges in one pass). Score this game against the rubric. Be strict about critical fails, generous to declared archetypes, and specific in critique.
+    // judge — a separate context ON PURPOSE: the maker never grades its own
+    // work, and a fresh head catches what the creator's context went blind to.
+    trace('judge', 'The judge is playing it…');
+    const runJudge = () =>
+      claude(
+        `You are the GameCraft JUDGE PANEL (feel, taste, fun-drive, integration, content judges in one pass). You did not make this game and you owe its maker nothing — the publish gate is only real if you are willing to fail things. Score strictly against the rubric; be generous to declared archetypes and specific in critique.
 
 RUBRIC:
 ${rubric}
@@ -378,18 +421,30 @@ ${rubric}
 DESIGN BRIEF (the promise to judge against):
 ${brief}
 
-PLAY-TEST HARNESS OUTPUT (console errors, bridge messages):
+SMOKE-TEST OUTPUT (deterministic load check: console errors, bridge messages):
 ${verifyOut || '(harness produced no output)'}
-Harness hard-fail: ${verifyFailed}
+Smoke-test hard-fail: ${verifyFailed}
 
-Your working directory IS this game's folder. The game's code is at ./index.html and screenshots from the play-test are in ./_shots/ — READ the code and LOOK at every screenshot with the Read tool before scoring. Judge art direction from the screenshots like an art director. Read ONLY files within this folder.
+EVIDENCE RULES — verdict from evidence only:
+- PLAY THE GAME YOURSELF with the playtest tool: at least one desktop run and one mobile run, driving the controls the brief declares (you choose the inputs — there is no generic script). Your screenshots land in ./_shots/ next to the creator's; LOOK at them with Read.
+- READ ./index.html. Read ONLY files within this folder (your working directory IS the game folder). Judge art direction from the screenshots like an art director.
+- Default to "fix" when evidence is missing: if you cannot SEE the core verb working in the screenshots, it does not work.
 
-PHYSICS INTEGRITY (rubric U3a — weight this heavily, it's the #1 failure mode): if the game has simulated motion, do NOT pass it unless you can justify from the code + evidence that (1) a run reliably TERMINATES — reaching a goal/death/end; flag any "flies forever / never loses / unbounded run with no resolution" as a CRITICAL fail; (2) the run is WINNABLE/completable by skilled play — read the level/goal geometry and the physics constants and reason about whether the goal is actually reachable; an unwinnable or impossible layout is a CRITICAL fail; (3) the feel is FORGIVING (not instant-death/brittle); (4) nothing freezes, tunnels, sticks, NaNs, or launches to infinity. Reason explicitly about termination and winnability in your critique. Do not assume the constants are tuned right — check them.
+PHYSICS INTEGRITY (rubric U3a — weight this heavily, it's the #1 failure mode): if the game has simulated motion, do NOT pass it unless you can justify from the code + YOUR OWN playtest evidence that (1) a run reliably TERMINATES — reaching a goal/death/end; use a long observe window to witness it; flag any "flies forever / never loses / unbounded run with no resolution" as a CRITICAL fail; (2) the run is WINNABLE/completable by skilled play — read the level/goal geometry and the physics constants and reason about whether the goal is actually reachable; an unwinnable or impossible layout is a CRITICAL fail; (3) the feel is FORGIVING (not instant-death/brittle); (4) nothing freezes, tunnels, sticks, NaNs, or launches to infinity. Reason explicitly about termination and winnability in your critique. Do not assume the constants are tuned right — check them.
 
+Write the critique TO the creator as an ordered fixlist — it is handed back verbatim for the fix cycle.
 Output ONLY a \`\`\`json fence: {"score": 0-100, "criticalFails": ["..."], "critique": "specific, actionable, ordered by importance", "verdict": "publish" | "fix"}`,
-      { tools: 'Read', cwd: gameDir, phase: 'judge' }
-    );
-    const verdict = extractJson(judgeOut);
+        { tools: 'Read,mcp__playtest__playtest', cwd: gameDir, phase: 'judge', playtestSlug: dirSlug }
+      );
+    // one retry on an unparseable verdict — a malformed fence must not burn a
+    // whole paid cycle
+    let verdict;
+    try {
+      verdict = extractJson(await runJudge());
+    } catch (e) {
+      trace('judge', `verdict unparseable (${short(e.message, 80)}) — re-asking the judge`, 'tool');
+      verdict = extractJson(await runJudge());
+    }
     trace('judge', `score ${verdict.score}/100, critical fails: ${verdict.criticalFails?.length ?? 0} — ${verdict.verdict}`);
     setGen({ verdict: JSON.stringify(verdict) });
 
@@ -401,6 +456,25 @@ Output ONLY a \`\`\`json fence: {"score": 0-100, "criticalFails": ["..."], "crit
   }
 
   if (published) {
+    if (!isEdit) {
+      // Claim the real name: the creator built in a wip dir so it never blocked
+      // on naming; meta.json names the game. Rename the dir (EEXIST = a
+      // concurrent run took the slug — suffix and move on) and rewrite any
+      // baked-in wip-slug references (localStorage keys like gs_best:<slug>).
+      let target = path.join(GAMES_DIR, meta.slug);
+      try {
+        fs.renameSync(gameDir, target);
+      } catch (e) {
+        if (e.code !== 'EEXIST' && e.code !== 'ENOTEMPTY') throw e;
+        meta.slug = `${meta.slug}-${genId.slice(0, 4)}`;
+        target = path.join(GAMES_DIR, meta.slug);
+        fs.renameSync(gameDir, target);
+      }
+      gameDir = target;
+      const htmlP = path.join(gameDir, 'index.html');
+      fs.writeFileSync(htmlP, fs.readFileSync(htmlP, 'utf8').split(dirSlug).join(meta.slug));
+      fs.writeFileSync(path.join(gameDir, 'meta.json'), JSON.stringify(meta, null, 2));
+    }
     // A judge-passed game becomes a DRAFT owned by its creator — it does NOT
     // hit the public library until the creator clicks Publish. The reporter
     // owns the mechanics (row + published.json locally; file upload + server-

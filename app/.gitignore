@@ -42,3 +42,7 @@ next-env.d.ts
 
 # local data (SQLite db lives on the Fly volume in prod)
 /data
+
+# pipeline work-in-progress dirs (a crash can strand one) + play evidence
+games/wip-*/
+games/*/_shots/

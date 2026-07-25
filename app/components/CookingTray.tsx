@@ -14,11 +14,13 @@ type Status = 'running' | 'published' | 'failed';
 type Build = { id: string; prompt: string; status: Status; slug: string | null; phase: string };
 
 const PHASE: Record<string, string> = {
-  designer: 'designing',
-  builder: 'building',
-  playtest: 'play-testing',
+  creator: 'dreaming & building',
+  playtest: 'test-driving',
   judge: 'judging',
   publish: 'finishing up',
+  // legacy kinds — builds that started before the creator merge
+  designer: 'designing',
+  builder: 'building',
 };
 
 // Derive a friendly phase from the latest non-thinking trace event.

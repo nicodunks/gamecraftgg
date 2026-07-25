@@ -1,17 +1,15 @@
 'use client';
 
-// The build loop, drawn as a diagram: designer → builder → play-tester →
-// judge, with the fix-cycle arrow curling back to the builder and the publish
-// exit on the right. The ACTIVE stage shimmers; finished stages are inked;
-// stages not yet reached sit faint. This is the hero of the build page — the
-// trace below is the footnotes.
-export type LoopStage = 'designer' | 'builder' | 'playtest' | 'judge';
+// The build journey, drawn as three friendly steps: making → trying → judging.
+// No role diagrams, no fix-cycle plumbing — the ACTIVE step shimmers, done
+// steps are inked, steps not yet reached sit faint. A small "extra polish"
+// note appears when the loop goes around again; that's all a creator needs.
+export type LoopStage = 'creator' | 'playtest' | 'judge';
 
 const NODES: { key: LoopStage; name: string; desc: string }[] = [
-  { key: 'designer', name: 'designer', desc: 'writes the brief' },
-  { key: 'builder', name: 'builder', desc: 'writes the game' },
-  { key: 'playtest', name: 'play-tester', desc: 'plays it for real' },
-  { key: 'judge', name: 'judge', desc: 'scores the fun' },
+  { key: 'creator', name: 'making it', desc: 'dreaming up the game, then coding it' },
+  { key: 'playtest', name: 'trying it', desc: 'played for real, phone and desktop' },
+  { key: 'judge', name: 'judging it', desc: 'only fun games get through' },
 ];
 
 export default function BuildLoop({
@@ -26,13 +24,13 @@ export default function BuildLoop({
   const activeIdx = NODES.findIndex((n) => n.key === stage);
   const state = (i: number) => {
     if (status !== 'running') return 'done';
-    if (i < activeIdx || cycles > 1) return 'done'; // past cycle 1, everything has run at least once
+    if (i < activeIdx || cycles > 1) return 'done'; // past round 1, everything has run at least once
     if (i === activeIdx) return 'active';
     return 'pending';
   };
 
   return (
-    <div className="loop-wrap" aria-label={`Build loop — currently ${status === 'running' ? NODES[activeIdx]?.name : status}`}>
+    <div className="loop-wrap" aria-label={`Build progress — currently ${status === 'running' ? NODES[activeIdx]?.name : status}`}>
       <div className="loop-row">
         {NODES.map((n, i) => (
           <div key={n.key} style={{ display: 'contents' }}>
@@ -48,30 +46,11 @@ export default function BuildLoop({
           </div>
         ))}
       </div>
-
-      {/* the return curve: judge → builder (fix cycle), plus the publish exit */}
-      <div className="loop-under">
-        <svg className="loop-return" viewBox="0 0 100 26" preserveAspectRatio="none" aria-hidden>
-          {/* from under the judge (x≈87) back to under the builder (x≈38) */}
-          <path
-            d="M 87 2 C 87 20, 38 20, 38 5"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="0.4"
-            strokeDasharray="1.6 1.1"
-            vectorEffect="non-scaling-stroke"
-          />
-          <path d="M 36.4 8 L 38 4.4 L 39.6 8" fill="none" stroke="currentColor" strokeWidth="0.4" vectorEffect="non-scaling-stroke" />
-        </svg>
-        <span className={`loop-cycle mono${status === 'running' && cycles > 1 ? ' hot' : ''}`}>
-          {status === 'running' && cycles > 1 ? `fix cycle ${cycles} of 3` : 'fix cycle · up to 3'}
-        </span>
-        <span
-          className={`loop-exit${status === 'published' ? ' published' : ''}${status === 'failed' ? ' failed' : ''}`}
-        >
-          {status === 'failed' ? '↛ not published' : '→ published'}
-        </span>
-      </div>
+      {status === 'running' && cycles > 1 && (
+        <div className="loop-under">
+          <span className="loop-cycle mono hot">giving it extra polish — round {cycles}</span>
+        </div>
+      )}
     </div>
   );
 }

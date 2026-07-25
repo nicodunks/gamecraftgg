@@ -1,6 +1,6 @@
 'use client';
 
-import { use, useEffect, useRef, useState } from 'react';
+import { use, useEffect, useState } from 'react';
 import Link from 'next/link';
 import BuildLoop, { type LoopStage } from '@/components/BuildLoop';
 
@@ -36,24 +36,23 @@ function friendly(e: Ev): string | null {
   switch (e.kind) {
     case 'worker':
       return 'The workshop picked up your idea';
-    case 'designer':
+    case 'creator':
+    case 'designer': // legacy kind — builds started before the creator merge
+    case 'builder': // legacy kind
       if (d.startsWith('Brief ready')) {
         const m = d.match(/"([^"]+)"/);
         return m ? `The plan is ready — “${m[1]}”` : 'The plan is ready';
       }
-      if (d.startsWith('Editing')) return 'Re-reading your game…';
-      if (d.startsWith('Edit brief ready')) return 'The change is planned out';
-      return 'Sketching the idea…';
-    case 'builder':
-      if (d.startsWith('index.html written')) return 'First playable version, done';
+      if (d.startsWith('index.html written')) return 'A playable version is done — now it gets tested';
       if (d.startsWith('Fixing per critique')) {
         const m = d.match(/cycle (\d)/);
         return `Making it better${m ? ` — round ${m[1]}` : ''}…`;
       }
+      if (d.startsWith('Editing')) return 'Re-reading your game…';
       if (d.includes('retrying')) return null;
-      return 'Drawing and coding your game…';
+      return 'Dreaming it up, then building it…';
     case 'playtest':
-      return d.startsWith('Play-testing') ? 'Test-playing it on phone and desktop…' : null;
+      return d.startsWith('Smoke-testing') || d.startsWith('Play-testing') ? 'Test-driving it on phone and desktop…' : null;
     case 'judge':
       if (d.startsWith('score')) {
         const m = d.match(/score (\d+)\/100/);
@@ -80,7 +79,6 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
   const [gen, setGen] = useState<Gen | null>(null);
   const [missing, setMissing] = useState(false);
   const [now, setNow] = useState(() => Date.now());
-  const notebookRef = useRef<HTMLDivElement>(null);
   const [emails, setEmails] = useState(['', '', '']);
   const [emailSaved, setEmailSaved] = useState(false);
 
@@ -141,8 +139,10 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
     if (text && story[story.length - 1]?.text !== text) story.push({ t: e.t, text });
   }
 
-  const lastStage = [...stageEvents].reverse().find((e) => ['designer', 'builder', 'playtest', 'judge'].includes(e.kind));
-  const stage = (lastStage?.kind ?? 'designer') as LoopStage;
+  const lastStage = [...stageEvents].reverse().find((e) => ['creator', 'designer', 'builder', 'playtest', 'judge'].includes(e.kind));
+  const rawStage = lastStage?.kind ?? 'creator';
+  // legacy designer/builder events fold into the merged creator step
+  const stage = (rawStage === 'designer' || rawStage === 'builder' ? 'creator' : rawStage) as LoopStage;
 
   const startT = allEvents[0]?.t ?? now;
   const elapsed = Math.max(0, now - startT);
@@ -235,7 +235,7 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
       )}
 
       <ol className="build-story">
-        {story.slice(-6).map((s, i, arr) => (
+        {story.slice(-4).map((s, i, arr) => (
           <li key={s.t} className={running && i === arr.length - 1 ? 'now' : 'done'}>
             <span className="story-mark">{running && i === arr.length - 1 ? '✎' : '✓'}</span>
             {s.text}
@@ -247,23 +247,6 @@ export default function BuildPage({ params }: { params: Promise<{ id: string }> 
           </li>
         )}
       </ol>
-
-      <details className="build-brief" style={{ marginTop: 22 }}>
-        <summary>peek inside the workshop</summary>
-        {gen.brief && <p style={{ marginBottom: 12 }}>{gen.brief.length > 700 ? gen.brief.slice(0, 700).trimEnd() + '…' : gen.brief}</p>}
-        <div className="trace-box" ref={notebookRef} style={{ maxHeight: 260 }}>
-          <ol style={{ listStyle: 'none', padding: 0, margin: '8px 0' }}>
-            {allEvents.slice(-120).map((e, i) => (
-              <li key={i} style={{ display: 'flex', gap: 10, padding: '2px 0', alignItems: 'baseline' }}>
-                <span className="mono" style={{ minWidth: 64, fontSize: 10.5, color: 'var(--graphite)' }}>
-                  {e.stream ?? e.kind}
-                </span>
-                <span style={{ fontSize: 12.5, color: 'var(--graphite)', whiteSpace: 'pre-wrap' }}>{e.detail}</span>
-              </li>
-            ))}
-          </ol>
-        </div>
-      </details>
     </main>
   );
 }

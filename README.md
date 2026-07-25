@@ -61,7 +61,7 @@ Economics: creating a game costs 1000 credits, an edit 50; new accounts start wi
 
 One Fly.io web machine + one volume + an ephemeral worker machine per build. [`app/Dockerfile`](app/Dockerfile) (Playwright base + claude CLI) and [`app/fly.toml`](app/fly.toml) describe the web app; workers are booted from the same image via the Machines API. The SQLite file and the game library live on the volume and survive deploys.
 
-Fleet dials (all Fly secrets): `GC_DISPATCH=machines` turns the fleet on (omit for single-box local-spawn mode), `FLY_API_TOKEN` (a deploy token) lets the app boot workers, `GC_INTERNAL_SECRET` signs per-job worker tokens, `GC_MAX_CONCURRENT` / `GC_DAILY_CAP` bound parallel and daily builds, and `GS_MODEL_*` / `GS_EFFORT_*` pin each agent's model and reasoning effort per role.
+Fleet dials (all Fly secrets): `GC_DISPATCH=machines` turns the fleet on (omit for single-box local-spawn mode), `FLY_API_TOKEN` (a deploy token) lets the app boot workers, `GC_INTERNAL_SECRET` signs per-job worker tokens, `GC_MAX_CONCURRENT` / `GC_DAILY_CAP` bound parallel and daily builds, and `GS_MODEL_CREATOR/JUDGE` / `GS_EFFORT_CREATOR/JUDGE` pin each agent's model and reasoning effort (defaults: Opus 5, creator high / judge medium).
 
 ## Design language
 

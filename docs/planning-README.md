@@ -25,9 +25,9 @@ Read in order:
 |---|---|
 | Ambition | Fast viral experiment — ship in days, invest more only if K-factor shows life |
 | Multiplayer scope v1 | Single-player + ≤8-player invite-link party rooms (Playroom Kit); live arenas deferred |
-| Generation model | **Pure freeform**: builder agent writes a self-contained `index.html`; no platform SDK; pinned CDN whitelist; conventions doc; **agents verify everything** |
-| Verification | **Agentic, not deterministic tests**: play-tester + judge agents in the build loop at runtime, scoring against the rubric. LLM-verified, iterate until pass |
-| Design phase | Heavy planning and clarification baked into the agent loop: a game-designer agent produces a design brief (mechanics, look, feel, high taste) before any code; clarifying questions to the creator when ambiguous |
+| Generation model | **Pure freeform**: a single CREATOR agent designs and builds a self-contained `index.html` in one context; no platform SDK; pinned CDN whitelist; conventions doc; **agents verify everything** |
+| Verification | **Agentic, not deterministic tests**: playtesting is a TOOL (real browser, per-game inputs) driven by both the creator and a separate judge agent, scoring against the rubric. LLM-verified, iterate until pass |
+| Design phase | Heavy planning baked into the creator agent: it writes the design brief (mechanics, look, feel, high taste) before any code, in the same context that builds — see `app/pipeline/docs/02-generation-pipeline.md` for the current two-agent loop |
 | Rendering | Both from day one: Phaser 3 (2D) and three.js (3D), orchestrator routes by prompt |
 | Mobile | **Touch required** — publish gate fails any game that doesn't play well on a phone |
 | Creation access | Play = zero friction, no account. Create = one-tap login (Google/Apple) + free daily generation quota |
