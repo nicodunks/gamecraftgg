@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { addCreation } from '@/lib/creations';
 
@@ -20,7 +20,43 @@ export default function GameActions({
   const [prompt, setPrompt] = useState('');
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  // Deleting is two deliberate clicks: the first arms it, the second does it.
+  // No modal — the button becomes the confirmation, so the destructive action
+  // is never one stray click away but never buried either.
+  const [armed, setArmed] = useState(false);
   const router = useRouter();
+
+  // If they arm it and wander off, disarm — a primed delete button shouldn't
+  // sit there indefinitely waiting for an accidental click.
+  useEffect(() => {
+    if (!armed) return;
+    const t = setTimeout(() => setArmed(false), 6000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  async function deleteGame() {
+    if (busy) return;
+    setBusy(true);
+    setNote(null);
+    try {
+      const res = await fetch('/api/game/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slug }),
+      });
+      const d = await res.json();
+      if (res.ok) {
+        router.push('/yours');
+        router.refresh();
+        return;
+      }
+      setNote(d.error ?? 'Could not delete that game.');
+    } catch {
+      setNote('Could not delete that game.');
+    }
+    setArmed(false);
+    setBusy(false);
+  }
 
   async function submitEdit(e: React.FormEvent) {
     e.preventDefault();
@@ -66,9 +102,25 @@ export default function GameActions({
               </button>
             </form>
           ) : (
-            <button className="btn" onClick={() => setEditing(true)}>
-              Keep editing (prompt it)
-            </button>
+            <div className="owner-row">
+              <button className="btn" onClick={() => setEditing(true)}>
+                Keep editing (prompt it)
+              </button>
+              {armed ? (
+                <span className="delete-confirm">
+                  <button className="btn btn-danger" onClick={deleteGame} disabled={busy} autoFocus>
+                    {busy ? 'deleting…' : 'Delete forever'}
+                  </button>
+                  <button className="btn btn-quiet" onClick={() => setArmed(false)} disabled={busy}>
+                    Keep it
+                  </button>
+                </span>
+              ) : (
+                <button className="btn btn-quiet" onClick={() => setArmed(true)}>
+                  Delete
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}

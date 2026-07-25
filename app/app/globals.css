@@ -387,10 +387,8 @@ main {
 }
 .prompt-row {
   display: flex;
-  gap: 12px;
-  max-width: 660px;
+  max-width: 820px;
   margin: 0 auto;
-  align-items: stretch;
 }
 .prompt-frame { position: relative; flex: 1; }
 .prompt-frame .hand-frame { position: absolute; inset: -6px; pointer-events: none; }
@@ -398,10 +396,46 @@ main {
   width: 100%;
   border: none;
   background: transparent;
-  padding: 16px 18px;
+  /* bottom padding reserves the send button's corner so a long prompt never
+     slides underneath it */
+  padding: 16px 18px 48px;
   font-size: 17px;
   font-family: var(--font-body), sans-serif;
   color: var(--ink);
+  /* room for a real sentence or three: wraps, grows (height is set in JS from
+     scrollHeight), and only scrolls once it hits max-height */
+  display: block;
+  resize: none;
+  line-height: 1.5;
+  /* height is owned entirely by the grow effect in PromptHero (min 108, max
+     260); a CSS min/max here would corrupt its scrollHeight measurement */
+  height: 108px;
+  overflow-y: auto;
+}
+
+/* send: a quiet circle in the box's bottom-right corner */
+.prompt-send {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1.5px solid var(--biro);
+  background: var(--paper);
+  color: var(--biro);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+.prompt-send:hover:not(:disabled) { background: var(--biro); color: var(--paper); transform: translateY(-1px); }
+.prompt-send:disabled { opacity: 0.4; cursor: default; }
+@media (prefers-reduced-motion: reduce) {
+  .prompt-send { transition: none; }
+  .prompt-send:hover:not(:disabled) { transform: none; }
 }
 .prompt-input:focus { outline: none; }
 .prompt-input::placeholder { color: var(--graphite); }
@@ -666,10 +700,30 @@ main {
 .back-link { display: inline-block; color: var(--graphite); font-size: 14px; margin-bottom: 10px; }
 .back-link:hover { color: var(--biro); }
 
-/* Google sign-in row on the login page */
-.oauth-row { display: flex; flex-direction: column; align-items: center; gap: 10px; margin-top: 16px; }
-.oauth-or { color: var(--graphite); font-size: 13px; }
+/* Google-only sign-in panel */
+.login-panel { display: flex; justify-content: center; margin: 22px auto 6px; }
 .oauth-google { display: inline-flex; align-items: center; gap: 9px; }
+
+/* maker credit under a game card — quiet by default, ink on hover */
+.card-main { display: block; color: inherit; text-decoration: none; }
+.card-maker {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--graphite);
+}
+.card-maker a { color: var(--graphite); text-decoration: none; border-bottom: 1px solid transparent; }
+.card-maker a:hover { color: var(--ink); border-bottom-color: var(--ink); }
+
+/* owner actions: destructive work is quiet until it is armed */
+.owner-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.delete-confirm { display: inline-flex; gap: 8px; align-items: center; }
+.btn-quiet { color: var(--graphite); border-color: rgba(26, 24, 21, 0.25); }
+.btn-quiet:hover { color: var(--ink); border-color: var(--ink); }
+.btn-danger {
+  color: var(--redpencil);
+  border-color: var(--redpencil);
+}
+.btn-danger:hover { background: var(--redpencil); color: var(--paper); }
 
 /* private-draft banner (remixes before their first judge-passed edit) */
 .draft-note {

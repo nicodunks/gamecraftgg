@@ -15,7 +15,7 @@ export default function Home() {
         <div className="feed-head">
           <h2>Top games</h2>
           <span className="rule" />
-          <span className="feed-note">ranked by what people actually replay</span>
+          <span className="feed-note">best-reviewed first</span>
         </div>
         {games.length === 0 ? (
           <p className="about-game">No games yet — the first one is yours to make.</p>

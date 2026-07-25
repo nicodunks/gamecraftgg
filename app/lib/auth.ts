@@ -45,13 +45,22 @@ export const auth = betterAuth({
       '/sign-in/email': { window: 600, max: 10 },
     },
   },
-  emailAndPassword: {
-    enabled: true,
-    // No email service at launch (deliberate) — so no verification mail and no
-    // reset-password flow. Abuse pressure is handled by per-IP limits instead
-    // (PLAN.md "free credits are inventory").
-    requireEmailVerification: false,
-  },
+  // GOOGLE-ONLY sign-in (founder call, 2026-07-25). Google asserts verified
+  // emails, which removes the two problems the password flow carried with no
+  // mail service: credential farming for free credits, and the pre-registration
+  // risk that comes with linking into unverified local accounts. Existing
+  // credential rows are left untouched in the DB — a returning password user
+  // signs in with Google on the same address and the accountLinking config
+  // below merges them into their original account, games and credits intact.
+  // Kept commented rather than deleted so re-enabling is a one-block revert.
+  // emailAndPassword: {
+  //   enabled: true,
+  //   // No email service at launch (deliberate) — so no verification mail and no
+  //   // reset-password flow. Abuse pressure is handled by per-IP limits instead
+  //   // (PLAN.md "free credits are inventory").
+  //   requireEmailVerification: false,
+  // },
+  emailAndPassword: { enabled: false },
   // Google sign-in: free, Google-verified emails (farming needs real Google
   // accounts), and no CSP loosening — it's a pure redirect flow. Configured
   // only when the secrets exist, so dev/prod without them still boots and the

@@ -383,11 +383,27 @@ export type FeedItem = GameRow & {
   heat: number;
   rating: number;
   rating_count: number;
+  // gamertag of the creator, when the game has one (optional: profile/"yours"
+  // listings reuse FeedItem and don't need it — those pages ARE the maker)
+  maker?: string | null;
 };
 
 // Retention-ranked feed: recent (7-day) plays weighted by how much people replay
 // and stick drive `heat`; `total_plays` is the lifetime count shown on the card
 // (social proof that never resets to "new" once a game has real plays).
+// How many "phantom" average ratings every game is weighed against before its
+// own score counts fully. 5 means a game needs a handful of real ratings to
+// climb on merit — high enough that one friendly 5-star can't take the top
+// slot, low enough that a genuinely loved game rises within a day.
+const RATING_PRIOR_N = 5;
+// The rating an unrated game is assumed to have until players say otherwise.
+// Deliberately a FIXED, slightly-pessimistic constant rather than the live
+// site-wide mean: with only a handful of ratings that mean swings wildly (one
+// 5-star review makes it 5.0, which would hand every unrated game a perfect
+// score and collapse the ranking back into a play count). Sitting below a
+// well-liked game means earning stars is what climbs the shelf.
+const RATING_PRIOR_MEAN = 3.6;
+
 export function getFeed(limit = 24): FeedItem[] {
   const rows = db()
     .prepare(
@@ -398,11 +414,24 @@ export function getFeed(limit = 24): FeedItem[] {
       COALESCE(p.avg_runs, 0) AS avg_runs,
       COALESCE(rt.rating, 0) AS rating,
       COALESCE(rt.rating_count, 0) AS rating_count,
-      COALESCE(p.plays, 0) * (1.0 + COALESCE(p.avg_runs, 0)) * (1.0 + MIN(COALESCE(p.avg_dur, 0) / 60000.0, 5.0))
-        + COALESCE(rt.rating, 0) * COALESCE(rt.rating_count, 0) * 3
-        + CASE WHEN g.created_at > (unixepoch() * 1000 - 72 * 3600 * 1000) THEN 50 ELSE 0 END
+      u.name AS maker,
+      -- Rating-first ranking, done honestly: a BAYESIAN average, so a single
+      -- 5-star can't outrank a game with twenty 4.8s. Each game is pulled
+      -- toward the site-wide mean by a phantom PRIOR_N ratings, and only earns
+      -- its own average as real votes accumulate:
+      --     (v * R + m * C) / (v + m)
+      -- Unrated games sit at the mean (never top, never buried). Lifetime
+      -- plays are a capped tiebreak, and brand-new games get a small nudge so
+      -- the shelf can still turn over.
+      (
+        (COALESCE(rt.rating_count, 0) * COALESCE(rt.rating, 0) + ${RATING_PRIOR_N} * ${RATING_PRIOR_MEAN})
+        / (COALESCE(rt.rating_count, 0) + ${RATING_PRIOR_N})
+      ) * 100
+        + MIN(COALESCE(t.total_plays, 0), 50) * 0.4
+        + CASE WHEN g.created_at > (unixepoch() * 1000 - 72 * 3600 * 1000) THEN 8 ELSE 0 END
         AS heat
     FROM games g
+    LEFT JOIN user u ON u.id = g.creator_ref
     LEFT JOIN (
       SELECT slug, COUNT(*) AS plays, AVG(runs) AS avg_runs, AVG(duration_ms) AS avg_dur
       FROM plays WHERE started_at > (unixepoch() * 1000 - 7 * 86400 * 1000)
