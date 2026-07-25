@@ -1,0 +1,26 @@
+{
+  "title": "Glowgulp",
+  "slug": "glowgulp-pond",
+  "description": "A tiny frog licks fireflies out of the twilight to keep the pond lit — thread your tongue past the wasps.",
+  "verb": "flick tongue at fireflies",
+  "dials": [
+    "mastery",
+    "progression"
+  ],
+  "orientation": "both",
+  "mode": "sp",
+  "scoreLabel": "glow",
+  "scoreOrder": "desc",
+  "palette": [
+    "#0B1026",
+    "#2A2F6B",
+    "#F2A65A",
+    "#2F8F5B",
+    "#8FE06A",
+    "#FFE873",
+    "#FFB627",
+    "#E8654F",
+    "#FDF6E3"
+  ],
+  "author": "gamesight"
+}
