@@ -135,7 +135,8 @@ class LocalReporter {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)
          ON CONFLICT(slug) DO UPDATE SET title=excluded.title, description=excluded.description, verb=excluded.verb,
            dials=excluded.dials, orientation=excluded.orientation, mode=excluded.mode,
-           score_label=excluded.score_label, score_order=excluded.score_order, boards=excluded.boards, palette=excluded.palette`
+           score_label=excluded.score_label, score_order=excluded.score_order, boards=excluded.boards, palette=excluded.palette,
+           status='published'`
       )
       .run(
         meta.slug, meta.title, meta.description ?? '', meta.verb ?? '', JSON.stringify(meta.dials ?? []),

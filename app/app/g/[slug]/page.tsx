@@ -76,6 +76,11 @@ export default async function GamePage({ params }: Params) {
           })()}
         </span>
       </div>
+      {!isPublished && (
+        <p className="draft-note">
+          Your private draft — only you can see it. Prompt an edit below and it goes public the moment it passes the judges.
+        </p>
+      )}
       <div className="viewer">
         {/* the game gets the full column; boards live BELOW the stage/actions */}
         <div>

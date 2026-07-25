@@ -666,6 +666,18 @@ main {
 .back-link { display: inline-block; color: var(--graphite); font-size: 14px; margin-bottom: 10px; }
 .back-link:hover { color: var(--biro); }
 
+/* private-draft banner (remixes before their first judge-passed edit) */
+.draft-note {
+  display: inline-block;
+  margin: 2px 0 10px;
+  padding: 4px 12px;
+  font-size: 13.5px;
+  color: var(--graphite);
+  border: 1.2px dashed rgba(26, 24, 21, 0.4);
+  border-radius: 8px;
+  background: var(--paper);
+}
+
 .board-picker { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
 .board-picker button { background: none; border: 1.5px solid rgba(26,24,21,0.2); color: var(--graphite); font-size: 12px; padding: 3px 10px; border-radius: 999px; }
 .board-picker button.active { border-color: var(--biro); color: var(--biro); }
