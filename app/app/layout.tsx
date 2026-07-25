@@ -11,6 +11,10 @@ const instrument = Instrument_Sans({ subsets: ['latin'], weight: ['400', '500', 
 const plexMono = IBM_Plex_Mono({ subsets: ['latin'], weight: ['500'], variable: '--font-mono' });
 
 export const metadata: Metadata = {
+  // Absolute base for og:image/twitter cards — without it Next resolves the
+  // relative /api/og/… URLs against localhost:3000 and social crawlers get a
+  // dead link. NEXT_PUBLIC_APP_ORIGIN is build-arg-inlined in production.
+  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_ORIGIN || 'http://localhost:3000'),
   title: 'GameCraft — games with your friends in 60 seconds',
   description: 'Play instantly. Make a game from a sentence. Dare your friends to beat your score.',
 };

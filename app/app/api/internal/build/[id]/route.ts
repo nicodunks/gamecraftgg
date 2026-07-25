@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db } from '@/lib/db';
+import { db, REMOVED_GAMES } from '@/lib/db';
 import { refundForGeneration } from '@/lib/credits';
 import { notifyOnFinish } from '@/lib/notify';
 import { verifyJobToken } from '@/lib/internal-auth';
@@ -144,7 +144,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     if (isEdit && slug !== gen.edit_slug) return NextResponse.json({ error: 'slug mismatch' }, { status: 400 });
     // authoritative slug claim: workers have private filesystems, so collisions
     // are resolved HERE, against the real games dir
-    if (!isEdit && fs.existsSync(path.join(GAMES_DIR, slug))) slug = `${slug}-${id.slice(0, 4)}`;
+    // removed-game slugs are permanently retired: disk-sync deletes their rows
+    // on every boot, so a new game claiming one would vanish within 30s
+    if (!isEdit && (fs.existsSync(path.join(GAMES_DIR, slug)) || REMOVED_GAMES.has(slug))) slug = `${slug}-${id.slice(0, 4)}`;
     const dir = path.join(GAMES_DIR, slug);
 
     // ATOMIC publish: everything lands in a staging dir first and is validated

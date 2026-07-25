@@ -8,6 +8,22 @@ import path from 'node:path';
 const DATA_DIR = path.join(process.cwd(), 'data');
 const GAMES_DIR = path.join(process.cwd(), 'games');
 
+// Games removed by founder decision. Deleting the folder isn't enough: old
+// volumes may still carry seed copies (the entrypoint copies no-clobber and
+// never deletes), which disk-sync would re-register as published on the next
+// boot. Tombstone them permanently — never sync from disk, and drop any row a
+// previous boot registered. The /play route serves nothing without a row, so
+// this kills the page AND the game bytes even where stale folders survive.
+// The build route must also never hand one of these slugs to a new game
+// (disk-sync would delete its row 30s later).
+export const REMOVED_GAMES = new Set([
+  'milk-run',
+  'best-in-show',
+  'roll-rumble',
+  'rattlesnake-noon',
+  'green-thumb',
+]);
+
 let _db: Database.Database | null = null;
 let _lastSync = 0;
 const SYNC_INTERVAL_MS = 30_000;
@@ -266,7 +282,10 @@ function syncGamesFromDisk(d: Database.Database) {
       dials=excluded.dials, orientation=excluded.orientation, mode=excluded.mode,
       score_label=excluded.score_label, score_order=excluded.score_order, boards=excluded.boards, palette=excluded.palette
   `);
+  const tombstone = d.prepare('DELETE FROM games WHERE slug = ?');
+  for (const slug of REMOVED_GAMES) tombstone.run(slug);
   for (const slug of dirEntries) {
+    if (REMOVED_GAMES.has(slug)) continue;
     const metaPath = path.join(GAMES_DIR, slug, 'meta.json');
     const htmlPath = path.join(GAMES_DIR, slug, 'index.html');
     // A game is only published once a `published.json` marker exists. The pipeline
@@ -452,20 +471,35 @@ export function getProfile(name: string): Profile | null {
 }
 
 // The makers leaderboard: gamertags ranked by lifetime plays across their
-// published games. Only real accounts with a published game appear.
-export type Maker = { name: string; games: number; plays: number };
+// published games. Only real accounts with a published game appear. Each row
+// carries the maker's most-played games so the board can show WHY a name
+// ranks — the games themselves, not just a number.
+export type MakerGame = { slug: string; title: string; plays: number };
+export type Maker = { name: string; games: number; plays: number; topGames: MakerGame[] };
 export function getTopMakers(limit = 50): Maker[] {
-  return db()
+  // one row per published game (already ordered most-played first), grouped
+  // into makers here — keeps the SQL trivial and the top-games cutoff in code
+  const rows = db()
     .prepare(
-      `SELECT u.name AS name, COUNT(DISTINCT g.slug) AS games, COUNT(p.id) AS plays
+      `SELECT u.name AS name, g.slug AS slug, g.title AS title, COUNT(p.id) AS plays
        FROM user u
        JOIN games g ON g.creator_ref = u.id AND g.status = 'published'
        LEFT JOIN plays p ON p.slug = g.slug
-       GROUP BY u.id
-       ORDER BY plays DESC, games DESC
-       LIMIT ?`
+       GROUP BY g.slug
+       ORDER BY plays DESC, g.created_at DESC`
     )
-    .all(limit) as Maker[];
+    .all() as { name: string; slug: string; title: string; plays: number }[];
+  const byMaker = new Map<string, Maker>();
+  for (const r of rows) {
+    let m = byMaker.get(r.name);
+    if (!m) byMaker.set(r.name, (m = { name: r.name, games: 0, plays: 0, topGames: [] }));
+    m.games += 1;
+    m.plays += r.plays;
+    if (m.topGames.length < 4) m.topGames.push({ slug: r.slug, title: r.title, plays: r.plays });
+  }
+  return [...byMaker.values()]
+    .sort((a, b) => b.plays - a.plays || b.games - a.games)
+    .slice(0, limit);
 }
 
 export function getMakerName(creatorRef: string): string | null {
